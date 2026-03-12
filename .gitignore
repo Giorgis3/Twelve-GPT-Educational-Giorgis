@@ -14,4 +14,7 @@ twelve_chat.bat
 .env
 user_info.json
 clustering.ipynb
-
+/data
+/nbs/project_2_fnl.ipynb
+/nbs/project_2_fnl(1).ipynb
+/nbs/Setting+up+Wyscout+Data.ipynb
