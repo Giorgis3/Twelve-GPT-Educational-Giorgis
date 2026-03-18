@@ -13,6 +13,7 @@ share/*
 twelve_chat.bat
 .env
 user_info.json
+.streamlit/secrets.toml
 clustering.ipynb
 /data
 /nbs/project_2_fnl.ipynb
