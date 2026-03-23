@@ -166,9 +166,10 @@ class Visual:
 
 
 class DistributionPlot(Visual):
-    def __init__(self, columns, labels=None, *args, **kwargs):
+    def __init__(self, columns, labels = None, *args, quality_metric_labels = None, **kwargs):
         self.empty = True
         self.columns = columns
+        self.quality_metric_labels = self._normalize_metric_labels(quality_metric_labels)
         self.marker_color = (
             c for c in [Visual.white, Visual.bright_yellow, Visual.bright_orange, Visual.bright_blue]
         )
@@ -179,7 +180,20 @@ class DistributionPlot(Visual):
         else:
             self._setup_axes()
 
-    def _setup_axes(self, labels=["Worse", "Average", "Better"]):
+    def _normalize_metric_labels(self, quality_metric_labels):
+        if quality_metric_labels is None:
+            return {}
+        if isinstance(quality_metric_labels, dict):
+            return quality_metric_labels
+        if isinstance(quality_metric_labels, (list, tuple)):
+            if len(quality_metric_labels) != len(self.columns):
+                raise ValueError(
+                    "`quality_metric_labels` MUST have the same length as columns when passed as a list/tuple"
+                )
+            return dict(zip(self.columns, quality_metric_labels))
+        raise TypeError("`quality_metric_labels` MUST be a dict, list, tuple, or None")
+
+    def _setup_axes(self, labels=["←   Worse", "Average", "Better   →"]):
         self.fig.update_xaxes(
             range=[-4, 4],
             fixedrange=True,
@@ -223,9 +237,7 @@ class DistributionPlot(Visual):
             )
             
 
-    def add_data_point(
-        self, ser_plot, plots, name, hover="", hover_string="", text=None
-    ):
+    def add_data_point(self, ser_plot, plots, name, hover="", hover_string="", text=None):
         if text is None:
             text = [name]
         elif isinstance(text, str):
@@ -237,7 +249,7 @@ class DistributionPlot(Visual):
         for i, col in enumerate(self.columns):
             temp_hover_string = hover_string
 
-            metric_name = format_metric(col)
+            metric_name = self.quality_metric_labels.get(col, format_metric(col))
 
             self.fig.add_trace(
                 go.Scatter(
