@@ -170,7 +170,7 @@ class DistributionPlot(Visual):
         self.empty = True
         self.columns = columns
         self.marker_color = (
-            c for c in [Visual.white, Visual.bright_yellow, Visual.bright_blue]
+            c for c in [Visual.white, Visual.bright_yellow, Visual.bright_orange, Visual.bright_blue]
         )
         self.marker_shape = (s for s in ["square", "hexagon", "diamond"])
         super().__init__(*args, **kwargs)
