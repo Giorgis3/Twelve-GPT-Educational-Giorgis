@@ -166,10 +166,11 @@ class Visual:
 
 
 class DistributionPlot(Visual):
-    def __init__(self, columns, labels = None, *args, quality_metric_labels = None, **kwargs):
+    def __init__(self, columns, labels = None, *args, quality_metric_labels = None, quality_metric_value_columns = None, **kwargs):
         self.empty = True
         self.columns = columns
         self.quality_metric_labels = self._normalize_metric_labels(quality_metric_labels)
+        self.quality_metric_value_columns = self._normalize_metric_labels(quality_metric_value_columns, value_name = "quality_metric_value_columns")
         self.marker_color = (
             c for c in [Visual.white, Visual.bright_yellow, Visual.bright_orange, Visual.bright_blue]
         )
@@ -180,7 +181,7 @@ class DistributionPlot(Visual):
         else:
             self._setup_axes()
 
-    def _normalize_metric_labels(self, quality_metric_labels):
+    def _normalize_metric_labels(self, quality_metric_labels, value_name = "quality_metric_labels"):
         if quality_metric_labels is None:
             return {}
         if isinstance(quality_metric_labels, dict):
@@ -188,10 +189,25 @@ class DistributionPlot(Visual):
         if isinstance(quality_metric_labels, (list, tuple)):
             if len(quality_metric_labels) != len(self.columns):
                 raise ValueError(
-                    "`quality_metric_labels` MUST have the same length as columns when passed as a list/tuple"
+                    f"`{value_name}` MUST have the same length as columns when passed as a list/tuple"
                 )
             return dict(zip(self.columns, quality_metric_labels))
-        raise TypeError("`quality_metric_labels` MUST be a dict, list, tuple, or None")
+        raise TypeError(f"`{value_name}` MUST be a dict, list, tuple, or None")
+
+    def _resolve_annotation_value(self, ser_plot, col):
+        # Explicit mapping has highest priority.
+        mapped_col = self.quality_metric_value_columns.get(col)
+        if mapped_col is not None and mapped_col in ser_plot.index:
+            return ser_plot[mapped_col]
+
+        # Convenience fallback: if plotting `z_xxx` and raw `xxx` exists, show raw value.
+        if col.startswith("z_"):
+            raw_col = col[2:]
+            if raw_col in ser_plot.index:
+                return ser_plot[raw_col]
+
+        # Default behavior (backward compatible).
+        return ser_plot[col]
 
     def _setup_axes(self, labels=["←   Worse", "Average", "Better   →"]):
         self.fig.update_xaxes(
@@ -277,11 +293,7 @@ class DistributionPlot(Visual):
                 y=i + 0.4,
                 text=self.annotation_text.format(
                     metric_name=metric_name,
-                    data=(
-                        ser_plot[col]
-                        # if self.plot_type == "scout"
-                        # else ser_plot[col + hover]
-                    ),
+                    data=self._resolve_annotation_value(ser_plot, col),
                 ),
                 showarrow=False,
                 font={
