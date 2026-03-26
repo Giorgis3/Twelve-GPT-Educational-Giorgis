@@ -16,6 +16,8 @@ user_info.json
 .streamlit/secrets.toml
 clustering.ipynb
 /data
-/nbs/project_2_fnl.ipynb
-/nbs/project_2_fnl(1).ipynb
-/nbs/Setting+up+Wyscout+Data.ipynb
+CB-Pairing AI Analyst - Notebooks\CB_Ground_Duels_Quality+Metrics_Sandbox.ipynb
+CB-Pairing AI Analyst - Notebooks\CB_Aerial_Duels_Qualities+Metrics_Sandbox.ipynb
+classes\visual_Sandbox.py
+pages\cb_pairing_analyst_Sandbox.py
+CB-Pairing AI Analyst - Notebooks\kernel_smoke_test.ipynb
