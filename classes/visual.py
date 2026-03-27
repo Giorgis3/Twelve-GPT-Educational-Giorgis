@@ -1,3 +1,10 @@
+"""
+Plotting utilities used by the Streamlit visual sandbox.
+
+The module provides reusable helpers and chart classes for player, country, and
+personality distribution views built with Plotly.
+"""
+
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
@@ -12,6 +19,9 @@ from typing import Union
 
 
 def hex_to_rgb(hex_color: str) -> tuple:
+    """
+    Convert a hex color string (e.g. `#aabbcc`) to an RGB tuple.
+    """
     hex_color = hex_color.lstrip("#")
     if len(hex_color) == 3:
         hex_color = hex_color * 2
@@ -19,10 +29,16 @@ def hex_to_rgb(hex_color: str) -> tuple:
 
 
 def rgb_to_color(rgb_color: tuple, opacity=1):
+    """
+    Build a CSS rgba color string from an RGB tuple and opacity.
+    """
     return f"rgba{(*rgb_color, opacity)}"
 
 
 def tick_text_color(color, text, alpha=1.0):
+    """
+    Wrap text in an HTML span using the given hex color and alpha.
+    """
     # color: hexadecimal
     # alpha: transparency value between 0 and 1 (default is 1.0, fully opaque)
     s = (
@@ -42,6 +58,10 @@ def tick_text_color(color, text, alpha=1.0):
 
 
 class Visual:
+    """
+    Base visual wrapper that applies shared styling to Plotly figures.
+    """
+
     # Can't use streamlit options due to report generation
     dark_green = hex_to_rgb(
         "#002c1c"
@@ -50,17 +70,33 @@ class Visual:
     bright_green = hex_to_rgb(
         "#00A938"
     )  # hex_to_rgb(st.get_option("theme.primaryColor"))
+    purple = hex_to_rgb("#800080")
+    magenta = hex_to_rgb("#ff00ff")
+    pink = hex_to_rgb("#ff69b4")
     bright_orange = hex_to_rgb("#ff4b00")
+    brown = hex_to_rgb("#8b4513")
     bright_yellow = hex_to_rgb("#ffcc00")
+    gold = hex_to_rgb("#FFD700")
     bright_blue = hex_to_rgb("#0095FF")
     white = hex_to_rgb("#ffffff")  # hex_to_rgb(st.get_option("theme.backgroundColor"))
     gray = hex_to_rgb("#808080")
+    silver = hex_to_rgb("#C0C0C0")
     black = hex_to_rgb("#000000")
     light_gray = hex_to_rgb("#d3d3d3")
+    emerald = hex_to_rgb("#50c878")
+    ruby = hex_to_rgb("#e0115f")
+    sapphire = hex_to_rgb("#0f52ba")
     table_green = hex_to_rgb("#009940")
     table_red = hex_to_rgb("#FF4B00")
 
     def __init__(self, pdf=False, plot_type="scout"):
+        """
+        Initialize the base figure and shared style configuration.
+
+        Args:
+            pdf: If true, scale fonts up for PDF-oriented rendering.
+            plot_type: Visual mode controlling annotation formatting.
+        """
         self.pdf = pdf
         if pdf:
             self.font_size_multiplier = 1.4
@@ -79,6 +115,10 @@ class Visual:
             self.annotation_text = "<span style=''>{metric_name}: {data:.2f}</span>"
 
     def show(self):
+        """
+        Render the figure in Streamlit.
+        In PDF mode, this could be adapted to save the figure instead.
+        """
         st.plotly_chart(
             self.fig,
             config={"displayModeBar": False},
@@ -87,6 +127,10 @@ class Visual:
         )
 
     def _setup_styles(self):
+        """
+        Apply common layout, legend, and axis styling.
+        Margins and font sizes are scaled based on the `pdf` flag to ensure readability in different contexts.
+        """
         side_margin = 60
         top_margin = 75
         pad = 16
@@ -121,6 +165,9 @@ class Visual:
         )
 
     def add_title(self, title, subtitle):
+        """
+        Add the main chart title and subtitle.
+        """
         self.title = title
         self.subtitle = subtitle
         self.fig.update_layout(
@@ -139,6 +186,10 @@ class Visual:
         )
 
     def add_low_center_annotation(self, text):
+        """
+        Add a low, centered annotation below the plotting area.
+        Useful for data source notes or methodological details - content should be concise to avoid cluttering the visual.
+        """
         self.fig.add_annotation(
             xref="paper",
             yref="paper",
@@ -154,6 +205,10 @@ class Visual:
         )
 
     def show(self):
+        """
+        Render the figure in Streamlit.
+        In PDF mode, this could be adapted to save the figure instead.
+        """
         st.plotly_chart(
             self.fig,
             config={"displayModeBar": False},
@@ -162,19 +217,45 @@ class Visual:
         )
 
     def close(self):
+        """
+        No-op placeholder for API symmetry with other visual components.
+        """
         pass
 
 
 class DistributionPlot(Visual):
+    """
+    Distribution chart for player/country metrics on a shared x-axis.
+    Each metric is plotted on a separate horizontal row, with a vertical reference line at x=0 indicating the average performance of the comparison group.
+    The background layer shows the distribution of all comparison entities as faint dots, while highlighted players/countries are overlaid with distinct markers and annotations.
+    """
     def __init__(self, columns, labels = None, *args, quality_metric_labels = None, quality_metric_value_columns = None, **kwargs):
+        """
+        Initialize metric columns, marker cycles, and axis labels.
+
+        Args:
+            columns: Base metric column names (without suffixes).
+            labels: Optional labels for the x-axis ticks.
+            *args: Forwarded positional args for `Visual`. 
+            quality_metric_labels: Optional metric label mapping/list for annotations.
+            quality_metric_value_columns: Optional mapping/list to override values shown in metric annotations.
+            **kwargs: Forwarded keyword args for `Visual`.
+        """
         self.empty = True
         self.columns = columns
         self.quality_metric_labels = self._normalize_metric_labels(quality_metric_labels)
         self.quality_metric_value_columns = self._normalize_metric_labels(quality_metric_value_columns, value_name = "quality_metric_value_columns")
+        
+        # Cycled styles ensure multiple highlighted entities remain visually distinct.
         self.marker_color = (
-            c for c in [Visual.white, Visual.bright_yellow, Visual.bright_orange, Visual.bright_blue]
+            c for c in [Visual.bright_orange, Visual.magenta, Visual.bright_yellow, Visual.bright_blue]
+        # original  -->  [Visual.white, Visual.bright_yellow, Visual.bright_orange, Visual.bright_blue]
         )
-        self.marker_shape = (s for s in ["square", "hexagon", "diamond"])
+
+        self.marker_shape = (s for s in ["diamond", "square", "triangle-up", "hexagon"])
+        # State used for dynamic multi-entity annotations rendered from add_data_point.
+        self._multi_annotation_items = []
+        self._multi_annotation_indices = []
         super().__init__(*args, **kwargs)
         if labels is not None:
             self._setup_axes(labels)
@@ -182,6 +263,12 @@ class DistributionPlot(Visual):
             self._setup_axes()
 
     def _normalize_metric_labels(self, quality_metric_labels, value_name = "quality_metric_labels"):
+        """
+        Normalize label input into a dictionary keyed by `self.columns`.
+
+        Accepts `None`, dict, list, or tuple. List/tuple inputs are zipped
+        against `self.columns` and must have matching length.
+        """
         if quality_metric_labels is None:
             return {}
         if isinstance(quality_metric_labels, dict):
@@ -191,10 +278,19 @@ class DistributionPlot(Visual):
                 raise ValueError(
                     f"`{value_name}` MUST have the same length as columns when passed as a list/tuple"
                 )
+            # Convert ordered labels into explicit column -> label mapping for direct lookup.
             return dict(zip(self.columns, quality_metric_labels))
         raise TypeError(f"`{value_name}` MUST be a dict, list, tuple, or None")
 
     def _resolve_annotation_value(self, ser_plot, col):
+        """
+        Resolve which value to show in metric annotations.
+
+        Priority:
+        1) Explicit mapping in `quality_metric_value_columns`
+        2) Raw counterpart for `z_`-prefixed metrics when available
+        3) The currently plotted column value
+        """
         # Explicit mapping has highest priority.
         mapped_col = self.quality_metric_value_columns.get(col)
         if mapped_col is not None and mapped_col in ser_plot.index:
@@ -210,6 +306,10 @@ class DistributionPlot(Visual):
         return ser_plot[col]
 
     def _setup_axes(self, labels=["←   Worse", "Average", "Better   →"]):
+        """
+        Set axis range, ticks, grid style, and center reference line.
+        Labels default to directional indicators with padding for visual balance.
+        """
         self.fig.update_xaxes(
             range=[-4, 4],
             fixedrange=True,
@@ -232,10 +332,23 @@ class DistributionPlot(Visual):
         )
 
     def add_group_data(self, df_plot, plots, names, legend, hover="", hover_string=""):
+        """
+        Add background comparison points for each configured metric.
 
+        Args:
+            df_plot: DataFrame containing metric columns and hover columns.
+            plots: Suffix appended to each metric for x-values (e.g. `"_Z"`).
+            names: Hover label values for each row/entity.
+            legend: Legacy parameter kept for compatibility.
+            hover: Suffix appended for hover-value columns.
+            hover_string: Plotly hover template body.
+        """
+
+        # One trace per metric so each distribution sits on its own y-row.
         for i, col in enumerate(self.columns):
             self.fig.add_trace(
                 go.Scatter(
+                    # Suffix-based column addressing keeps plotting logic generic.
                     x=df_plot[col + plots].tolist(), 
                     y=list(np.ones(len(df_plot[col + plots])) * i),
                     mode="markers",
@@ -253,20 +366,30 @@ class DistributionPlot(Visual):
             )
             
 
-    def add_data_point(
-        self,
-        ser_plot,
-        plots,
-        name,
-        hover="",
-        hover_string="",
-        text=None,
-        add_annotations=True,
-    ):
+    def add_data_point(self, ser_plot, plots, name, hover="", hover_string="", text=None, add_single_annotations=True, add_multi_annotations=False, add_annotations=None):
+        """
+        Add one highlighted entity (player/country) across all metrics.
+
+        Args:
+            ser_plot: Series-like metric source for a single entity.
+            plots: Suffix appended to each metric for x-values (e.g. `"_Z"`).
+            name: Legend label for this entity.
+            hover: Suffix appended for hover-value columns.
+            hover_string: Plotly hover template body.
+            text: Optional hover text override.
+            add_single_annotations: If true, add one annotation per metric for this single entity.
+            add_multi_annotations: If true, include this entity in a combined multi-entity
+                annotation line per metric, using marker tokens.
+            add_annotations: Backward-compatible alias for `add_single_annotations`.
+        """
+        if add_annotations is not None:
+            add_single_annotations = add_annotations
+
         if text is None:
             text = [name]
         elif isinstance(text, str):
             text = [text]
+        # We add one trace per metric, but keep only a single legend entry.
         legend = True
         color = next(self.marker_color)
         marker = next(self.marker_shape)
@@ -297,15 +420,25 @@ class DistributionPlot(Visual):
             )
             legend = False
 
-            if add_annotations:
+            if add_single_annotations:
+                # Place metric labels between distribution rows (rather than on top of points)
+                # and render them as badges for readability in dense datasets.
+                annotation_y = i + 0.5
+                if i == len(self.columns) - 1:
+                    # Keep top-most label comfortably inside the plotting area.
+                    annotation_y = i + 0.4
+
                 self.fig.add_annotation(
+                    # Annotation labels stay near the center reference axis (x=0).
                     x=0,
-                    y=i + 0.4,
+                    y=annotation_y,
                     text=self.annotation_text.format(
                         metric_name=metric_name,
                         data=self._resolve_annotation_value(ser_plot, col),
                     ),
                     showarrow=False,
+                    xanchor="center",
+                    yanchor="middle",
                     font={
                         "color": rgb_to_color(self.white),
                         "family": "Gilroy-Light",
@@ -313,10 +446,154 @@ class DistributionPlot(Visual):
                     },
                 )
 
+        if add_multi_annotations:
+            marker_tag = self._build_marker_tag(color=color, marker_symbol=marker)
+            self._multi_annotation_items.append(
+                {
+                    "ser_plot": ser_plot,
+                    "marker_tag": marker_tag,
+                    "name": name,
+                }
+            )
+            self.add_multi_entity_annotations(
+                annotation_items=self._multi_annotation_items,
+                value_decimals=2,
+                separator="   |   ",
+                replace_existing=True,
+            )
+
+    def _format_annotation_value(self, value, decimals=2):
+        """
+        Format annotation values consistently while handling missing data.
+        """
+        if pd.isna(value):
+            return "n/a"
+        try:
+            return f"{float(value):.{decimals}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _build_marker_tag(self, color, marker_symbol):
+        """
+        Build an HTML marker token used inside combined annotation text.
+        """
+        marker_symbol_map = {
+            "diamond": "◆",
+            "square": "■",
+            "triangle-up": "▲",
+            "hexagon": "⬢",
+        }
+        glyph = marker_symbol_map.get(marker_symbol, "●")
+        return f"<span style='color:{rgb_to_color(color)}'>{glyph}</span>"
+
+    def _clear_multi_entity_annotations(self):
+        """
+        Remove previously rendered combined multi-entity annotations.
+        """
+        if not self._multi_annotation_indices:
+            return
+
+        existing_annotations = list(self.fig.layout.annotations or [])
+        keep_annotations = [
+            ann
+            for idx, ann in enumerate(existing_annotations)
+            if idx not in self._multi_annotation_indices
+        ]
+        self.fig.layout.annotations = tuple(keep_annotations)
+        self._multi_annotation_indices = []
+
+    def add_multi_entity_annotations(
+        self,
+        annotation_items=None,
+        value_decimals=2,
+        x=0,
+        separator="   |   ",
+        replace_existing=True,
+    ):
+        """
+        Add one combined annotation per metric for multiple highlighted entities.
+
+        Args:
+            annotation_items: Iterable of dict-like items with:
+                - ser_plot: Series-like metric source for one highlighted entity
+                - marker_tag: HTML marker token for this entity (preferred)
+                - label: Optional fallback label used in the combined annotation text
+            value_decimals: Decimal precision for numeric values.
+            x: X-position where combined annotations are anchored.
+            separator: Delimiter between per-entity value chunks.
+            replace_existing: If true, remove prior combined multi-entity annotations
+                before drawing the updated set.
+        """
+        if annotation_items is None:
+            annotation_items = self._multi_annotation_items
+
+        if not annotation_items:
+            return
+
+        valid_items = []
+        for item in annotation_items:
+            if not isinstance(item, dict):
+                continue
+            ser_plot = item.get("ser_plot")
+            if ser_plot is None:
+                continue
+            marker_tag = item.get("marker_tag")
+            label = item.get("label", item.get("name", "Entity"))
+            valid_items.append(
+                {
+                    "marker_tag": marker_tag,
+                    "label": label,
+                    "ser_plot": ser_plot,
+                }
+            )
+
+        if not valid_items:
+            return
+
+        if replace_existing:
+            self._clear_multi_entity_annotations()
+
+        for i, col in enumerate(self.columns):
+            metric_name = self.quality_metric_labels.get(col, format_metric(col))
+            chunks = []
+            for item in valid_items:
+                value = self._resolve_annotation_value(item["ser_plot"], col)
+                marker_or_label = item["marker_tag"] if item["marker_tag"] else item["label"]
+                chunks.append(
+                    f"{marker_or_label} = {self._format_annotation_value(value, decimals=value_decimals)}"
+                )
+
+            annotation_y = i + 0.5
+            if i == len(self.columns) - 1:
+                annotation_y = i + 0.4
+
+            self.fig.add_annotation(
+                x=x,
+                y=annotation_y,
+                text=f"<span style=''>{metric_name}: {separator.join(chunks)}</span>",
+                showarrow=False,
+                xanchor="center",
+                yanchor="middle",
+                font={
+                    "color": rgb_to_color(self.white),
+                    "family": "Gilroy-Light",
+                    "size": 12 * self.font_size_multiplier,
+                },
+            )
+            self._multi_annotation_indices.append(len(self.fig.layout.annotations) - 1)
+
 
     def add_player(self, player: Union[Player, Country], n_group, metrics):
+        """
+        Add a single `Player` or `Country` to the distribution chart.
 
-        # # Make list of all metrics with _Z and _Rank added at end
+        Args:
+            player: Entity whose `ser_metrics` values are plotted.
+            n_group: Group size used in rank hover text.
+            metrics: Base metric names used by this view.
+        """
+
+        # Keep suffix conventions explicit here for readability and future extensions.
         metrics_Z = [metric + "_Z" for metric in metrics]
         metrics_Ranks = [metric + "_Ranks" for metric in metrics]
 
@@ -356,8 +633,15 @@ class DistributionPlot(Visual):
     #     )
 
     def add_players(self, players: Union[PlayerStats, CountryStats], metrics):
+        """
+        Add comparison-group points for player or country datasets.
 
-        # Make list of all metrics with _Z and _Rank added at end
+        Args:
+            players: Dataset wrapper (`PlayerStats` or `CountryStats`).
+            metrics: Base metric names used by this view.
+        """
+
+        # Keep suffix conventions explicit here for readability and future extensions.
         metrics_Z = [metric + "_Z" for metric in metrics]
         metrics_Ranks = [metric + "_Ranks" for metric in metrics]
 
@@ -391,6 +675,9 @@ class DistributionPlot(Visual):
     #     self.add_title(title, subtitle)
 
     def add_title_from_player(self, player: Union[Player, Country]):
+        """
+        Build and apply an entity-aware title and subtitle.
+        """
         self.player = player
 
         title = f"Evaluation of {player.name}?"
@@ -409,9 +696,22 @@ class DistributionPlot(Visual):
 
 
 class DistributionPlotPersonality(Visual):
+    """
+    Distribution plot specialized for personality trait comparisons.
+    """
+
     def __init__(self, columns, *args, **kwargs):
+        """
+        Initialize a personality distribution chart.
+
+        Args:
+            columns: Base metric column names (without suffixes).
+            *args: Forwarded positional args for `Visual`.
+            **kwargs: Forwarded keyword args for `Visual`.
+        """
         self.empty = True
         self.columns = columns
+        # Cycled styles ensure multiple highlighted entities remain visually distinct.
         self.marker_color = (
             c for c in [Visual.white, Visual.bright_yellow, Visual.bright_blue]
         )
@@ -420,6 +720,9 @@ class DistributionPlotPersonality(Visual):
         self._setup_axes()
 
     def _setup_axes(self):
+        """
+        Configure fixed axis settings for personality trait plots.
+        """
         self.fig.update_xaxes(
             range=[-4, 4],
             fixedrange=True,
@@ -435,6 +738,18 @@ class DistributionPlotPersonality(Visual):
         )
 
     def add_group_data(self, df_plot, plots, names, legend, hover="", hover_string=""):
+        """
+        Add background comparison points for each personality metric.
+
+        Args:
+            df_plot: DataFrame containing metrics and rank-related columns.
+            plots: Suffix appended to each metric for x-values (e.g. `"_Z"`).
+            names: Hover label values for each row/entity.
+            legend: Legend label for background traces.
+            hover: Suffix appended for hover-value columns.
+            hover_string: Plotly hover template body.
+        """
+        # First trace carries legend label; subsequent traces hide it to avoid duplicates.
         showlegend = True
 
         for i, col in enumerate(self.columns):
@@ -447,6 +762,7 @@ class DistributionPlotPersonality(Visual):
 
             self.fig.add_trace(
                 go.Scatter(
+                    # Suffix-based column addressing keeps plotting logic generic.
                     x=df_plot[col + plots],
                     y=np.ones(len(df_plot)) * i,
                     mode="markers",
@@ -463,13 +779,23 @@ class DistributionPlotPersonality(Visual):
             )
             showlegend = False
 
-    def add_data_point(
-        self, ser_plot, plots, name, hover="", hover_string="", text=None
-    ):
+    def add_data_point(self, ser_plot, plots, name, hover="", hover_string="", text=None):
+        """
+        Add one highlighted person across all configured personality metrics.
+
+        Args:
+            ser_plot: Series-like metric source for one person.
+            plots: Suffix appended to each metric for x-values (e.g. `"_Z"`).
+            name: Legend label for this person.
+            hover: Suffix appended for hover-value columns.
+            hover_string: Plotly hover template body.
+            text: Optional hover text override.
+        """
         if text is None:
             text = [name]
         elif isinstance(text, str):
             text = [text]
+        # We add one trace per metric, but keep only a single legend entry.
         legend = True
         color = next(self.marker_color)
         marker = next(self.marker_shape)
@@ -501,6 +827,7 @@ class DistributionPlotPersonality(Visual):
             legend = False
 
             self.fig.add_annotation(
+                # Annotation labels are anchored near the center reference axis (x=0).
                 x=0,
                 y=i + 0.4,
                 text=f"<span style=''>{metric_name}: {int(ser_plot[col]):.0f}</span>",
@@ -513,7 +840,15 @@ class DistributionPlotPersonality(Visual):
             )
 
     def add_person(self, person: Person, n_group, metrics):
-        # Make list of all metrics with _Z and _Rank added at end
+        """
+        Add a single person with rank-based hover details.
+
+        Args:
+            person: Person entity whose metrics are plotted.
+            n_group: Group size used in rank hover text.
+            metrics: Base metric names used by this view.
+        """
+        # Keep suffix conventions explicit here for readability and future extensions.
         metrics_Z = [metric + "_Z" for metric in metrics]
         metrics_Ranks = [metric + "_Ranks" for metric in metrics]
 
@@ -526,8 +861,15 @@ class DistributionPlotPersonality(Visual):
         )
 
     def add_persons(self, persons: PersonStat, metrics):
+        """
+        Add all comparison-group persons to the background layer.
 
-        # Make list of all metrics with _Z and _Rank added at end
+        Args:
+            persons: Dataset wrapper containing the comparison population.
+            metrics: Base metric names used by this view.
+        """
+
+        # Keep suffix conventions explicit here for readability and future extensions.
         metrics_Z = [metric + "_Z" for metric in metrics]
         metrics_Ranks = [metric + "_Ranks" for metric in metrics]
 
@@ -541,13 +883,18 @@ class DistributionPlotPersonality(Visual):
         )
 
     def add_title_from_person(self, person: Person):
+        """
+        Create and apply chart title/subtitle for the selected person.
+        """
         self.person = person
         title = f"Evaluation of {person.name}"
         subtitle = f"Based on Big Five scores"
         self.add_title(title, subtitle)
 
 
-"""class ViolinPlot(Visual):
+
+"""
+class ViolinPlot(Visual):
     def violin(data, point_data):
         # Create a figure object
         fig = go.Figure()
@@ -596,4 +943,5 @@ class DistributionPlotPersonality(Visual):
         fig.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0, 40])),showlegend=True, title= 'Candidate profile')
         fig.update_traces(fill='toself', marker=dict(size=5))
         # Display the plot in Streamlit
-        st.plotly_chart(fig)"""
+        st.plotly_chart(fig)
+"""
