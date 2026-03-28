@@ -21,3 +21,5 @@ CB-Pairing AI Analyst - Notebooks\CB_Aerial_Duels_Qualities+Metrics_Sandbox.ipyn
 classes\visual_Sandbox.py
 pages\cb_pairing_analyst_Sandbox.py
 CB-Pairing AI Analyst - Notebooks\kernel_smoke_test.ipynb
+tmp/*
+debug.log
