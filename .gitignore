@@ -15,7 +15,8 @@ twelve_chat.bat
 user_info.json
 .streamlit/secrets.toml
 clustering.ipynb
-/data
+data/data-CB_pairing_AI_analyst/PL_2024_wyscout/*
+CB-Pairing AI Analyst - Notebooks\kernel_smoke_test.ipynb
 CB-Pairing AI Analyst - Notebooks\CB_Ground_Duels_Quality+Metrics_Sandbox.ipynb
 CB-Pairing AI Analyst - Notebooks\CB_Aerial_Duels_Qualities+Metrics_Sandbox.ipynb
 classes\visual_Sandbox.py
