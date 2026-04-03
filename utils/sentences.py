@@ -6,24 +6,25 @@ This module is intentionally lightweight and is used by description builders to:
 2) normalize metric names into human-readable phrases.
 """
 
-# Explicit labels for all columns currently used in Ground Duels CSV exports.
-# These overrides keep display text clear and domain-specific, while fallback
-# normalization still supports all other datasets.
-GROUND_DUELS_FORMAT_METRIC_MAP = {
+# Explicit labels for all columns currently used in Ground + Aerial Duels CSV exports.
+# These overrides keep display text clear and domain-specific, while fallback normalization still supports all other datasets.
+GROUND_AND_AERIAL_DUELS_FORMAT_METRIC_MAP = {
     "": "Row index",
-    "anchor_player_id": "Anchor player ID",
-    "anchor_player_name": "Anchor player name",
+    "aerial_duel_quality_score": "Aerial duel quality score",
+    "aerial_wins_per90": "Aerial wins per 90",
+    "anchor_player_id": "Anchor CB player ID",
+    "anchor_player_name": "Anchor CB player name",
     "card_discipline": "Card discipline",
     "CB_dominant_playing_side_CB1": "CB1 dominant playing side",
     "CB_dominant_playing_side_CB2": "CB2 dominant playing side",
     "CB_pair_fit_rank": "CB pair fit rank",
     "CB_pair_fit_z_score": "CB pair fit z-score",
-    "companion_fit_score": "Companion fit score",
-    "companion_rank_for_anchor": "Companion rank for anchor",
+    "companion_fit_score": "(CB) Companion fit score",
+    "companion_rank_for_anchor": "(CB) Companion rank for anchor",
     "complement_raw": "Complementarity (raw)",
     "complement_z": "Complementarity z-score",
     "coverage_gain_raw": "Deficit-coverage gain (raw)",
-    "coverage_gain_z_within_anchor": "Deficit-coverage gain z-score within anchor",
+    "coverage_gain_z_within_anchor": "Deficit-coverage gain z-score within anchor CB",
     "discipline": "Discipline",
     "duel_success_rate": "Duel success rate",
     "duels_per90": "Duels per 90",
@@ -61,23 +62,27 @@ GROUND_DUELS_FORMAT_METRIC_MAP = {
     "z_duels_per90": "Duels per 90 z-score",
     "z_interceptions_per90": "Interceptions per 90 z-score",
     "z_possession_win_rate": "Possession win rate z-score",
+    "z_aerial_wins_per90": "Aerial wins per 90 z-score",
 }
 
-GROUND_DUELS_WRITE_OUT_METRIC_MAP = {
+
+GROUND_AND_AERIAL_DUELS_WRITE_OUT_METRIC_MAP = {
     "": "row index",
-    "anchor_player_id": "anchor player identifier",
-    "anchor_player_name": "anchor player name",
+    "aerial_duel_quality_score": "aerial duel quality score",
+    "aerial_wins_per90": "aerial wins per 90 minutes",
+    "anchor_player_id": "anchor CB player identifier",
+    "anchor_player_name": "anchor CB player name",
     "card_discipline": "card discipline",
     "CB_dominant_playing_side_CB1": "dominant playing side for CB1",
     "CB_dominant_playing_side_CB2": "dominant playing side for CB2",
     "CB_pair_fit_rank": "CB pair fit rank",
     "CB_pair_fit_z_score": "CB pair fit z-score",
-    "companion_fit_score": "companion fit score",
-    "companion_rank_for_anchor": "companion rank for anchor",
+    "companion_fit_score": "(CB) companion fit score",
+    "companion_rank_for_anchor": "(CB) companion rank for anchor",
     "complement_raw": "raw complementarity score",
     "complement_z": "complementarity z-score",
     "coverage_gain_raw": "raw deficit-coverage gain",
-    "coverage_gain_z_within_anchor": "deficit-coverage gain z-score within anchor",
+    "coverage_gain_z_within_anchor": "deficit-coverage gain z-score within anchor CB",
     "discipline": "discipline score",
     "duel_success_rate": "duel success rate",
     "duels_per90": "duels per 90 minutes",
@@ -115,6 +120,7 @@ GROUND_DUELS_WRITE_OUT_METRIC_MAP = {
     "z_duels_per90": "duels per 90 z-score",
     "z_interceptions_per90": "interceptions per 90 z-score",
     "z_possession_win_rate": "possession win rate z-score",
+    "z_aerial_wins_per90": "aerial wins per 90 z-score",
 }
 
 
@@ -194,9 +200,7 @@ def format_metric(metric):
     """
     Format a metric key into a short display label.
 
-    Intended for compact UI or sentence fragments where we want readable text
-    without extra qualifiers such as "adjusted per90".
-    Ground Duels CSV columns are handled with explicit label overrides.
+    Intended for compact UI or sentence fragments where we want readable text without extra such as "adjusted per90". Ground + Aerial Duels CSV columns are handled with explicit label overrides.
 
     Parameters:
         metric: Raw metric key (for example, ``"npxG_adjusted_per90"``).
@@ -204,8 +208,8 @@ def format_metric(metric):
     Returns:
         str: Cleaned, capitalized metric label.
     """
-    if metric in GROUND_DUELS_FORMAT_METRIC_MAP:
-        return GROUND_DUELS_FORMAT_METRIC_MAP[metric]
+    if metric in GROUND_AND_AERIAL_DUELS_FORMAT_METRIC_MAP:
+        return GROUND_AND_AERIAL_DUELS_FORMAT_METRIC_MAP[metric]
 
     return (
         metric.replace("_", " ")
@@ -221,9 +225,7 @@ def write_out_metric(metric):
     """
     Expand a metric key into a more explicit narrative phrase.
 
-    This version is designed for full sentences, so it keeps contextual wording
-    (for example "adjusted for possession" and "per 90"). Ground Duels CSV
-    columns are handled with explicit phrase overrides.
+    This version is designed for full sentences, so it keeps contextual wording (for example "adjusted for possession" and "per 90"). Ground + Aerial Duels CSV columns are handled with explicit phrase overrides.
 
     Parameters:
         metric: Raw metric key (for example, ``"passes_adjusted_per90"``).
@@ -231,8 +233,8 @@ def write_out_metric(metric):
     Returns:
         str: Verbose metric phrase ready to embed in generated prose.
     """
-    if metric in GROUND_DUELS_WRITE_OUT_METRIC_MAP:
-        return GROUND_DUELS_WRITE_OUT_METRIC_MAP[metric]
+    if metric in GROUND_AND_AERIAL_DUELS_WRITE_OUT_METRIC_MAP:
+        return GROUND_AND_AERIAL_DUELS_WRITE_OUT_METRIC_MAP[metric]
 
     return (
         metric.replace("_", " ")
