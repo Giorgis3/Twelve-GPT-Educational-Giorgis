@@ -305,13 +305,39 @@ class DistributionPlot(Visual):
         # Default behavior (backward compatible).
         return ser_plot[col]
 
+    def _is_rank_metric(self, col):
+        """
+        Detect rank-like metrics based on plotted column name and mapped raw column.
+        """
+        col_token = str(col).lower()
+        mapped_col = self.quality_metric_value_columns.get(col)
+        mapped_token = str(mapped_col).lower() if mapped_col is not None else ""
+        return ("rank" in col_token) or ("rank" in mapped_token)
+
+    def _format_metric_annotation_value(self, col, value, decimals=2):
+        """
+        Format annotation value with semantic-aware rendering.
+
+        Rank-like metrics are displayed as integer positions (e.g., `# 1`), while all other numeric metrics preserve decimal precision.
+        """
+        if pd.isna(value):
+            return "N/A"
+
+        if self._is_rank_metric(col):
+            try:
+                return f"  # {int(round(float(value)))}"
+            except (TypeError, ValueError):
+                return f"  # {value}"
+
+        return self._format_annotation_value(value, decimals=decimals)
+
     def _setup_axes(self, labels=["←   Worse", "Average", "Better   →"]):
         """
         Set axis range, ticks, grid style, and center reference line.
         Labels default to directional indicators with padding for visual balance.
         """
         self.fig.update_xaxes(
-            range=[-4, 4],
+            range=[-4.5, 4.5],
             fixedrange=True,
             tickmode="array",
             tickvals=[-3, 0, 3],
@@ -432,9 +458,10 @@ class DistributionPlot(Visual):
                     # Annotation labels stay near the center reference axis (x=0).
                     x=0,
                     y=annotation_y,
-                    text=self.annotation_text.format(
-                        metric_name=metric_name,
-                        data=self._resolve_annotation_value(ser_plot, col),
+                    text=(
+                        f"<span style=''>{metric_name}  →  "
+                        f"{self._format_metric_annotation_value(col, self._resolve_annotation_value(ser_plot, col), decimals=2)}"
+                        f"</span>"
                     ),
                     showarrow=False,
                     xanchor="center",
@@ -467,7 +494,7 @@ class DistributionPlot(Visual):
         Format annotation values consistently while handling missing data.
         """
         if pd.isna(value):
-            return "n/a"
+            return "N/A"
         try:
             return f"{float(value):.{decimals}f}"
         except (TypeError, ValueError):
@@ -521,8 +548,7 @@ class DistributionPlot(Visual):
             value_decimals: Decimal precision for numeric values.
             x: X-position where combined annotations are anchored.
             separator: Delimiter between per-entity value chunks.
-            replace_existing: If true, remove prior combined multi-entity annotations
-                before drawing the updated set.
+            replace_existing: If true, remove prior combined multi-entity annotations before drawing the updated set.
         """
         if annotation_items is None:
             annotation_items = self._multi_annotation_items
@@ -560,7 +586,7 @@ class DistributionPlot(Visual):
                 value = self._resolve_annotation_value(item["ser_plot"], col)
                 marker_or_label = item["marker_tag"] if item["marker_tag"] else item["label"]
                 chunks.append(
-                    f"{marker_or_label} = {self._format_annotation_value(value, decimals=value_decimals)}"
+                    f"{marker_or_label} = {self._format_metric_annotation_value(col, value, decimals=value_decimals)}"
                 )
 
             annotation_y = i + 0.5
@@ -570,7 +596,7 @@ class DistributionPlot(Visual):
             self.fig.add_annotation(
                 x=x,
                 y=annotation_y,
-                text=f"<span style=''>{metric_name}: {separator.join(chunks)}</span>",
+                text=f"<span style=''>{metric_name}  →  {separator.join(chunks)}</span>",
                 showarrow=False,
                 xanchor="center",
                 yanchor="middle",
