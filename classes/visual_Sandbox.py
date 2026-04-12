@@ -10,12 +10,14 @@ import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
 import pandas as pd
+import re
+import unicodedata
 
 
 from utils.sentences import format_metric
 from classes.data_point import Player, Country, Person
 from classes.data_source import PlayerStats, CountryStats, PersonStat
-from typing import Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 
 def hex_to_rgb(hex_color: str) -> tuple:
@@ -715,6 +717,1167 @@ class DistributionPlot(Visual):
             raise TypeError("Invalid player type: expected Player or Country")
 
         self.add_title(title, subtitle)
+
+
+class _Ground_Duels_Distribution_Resolver:
+    """
+    Shared helper utilities used by Ground-Duels distribution plot wrappers.
+    """
+
+    @staticmethod
+    def _normalize_text(value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip().lower()
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    @classmethod
+    def _tokenize(cls, value: Any) -> Tuple[str, ...]:
+        normalized = cls._normalize_text(value)
+        if not normalized:
+            return tuple()
+        return tuple(normalized.split(" "))
+
+    @staticmethod
+    def _ensure_columns(df: pd.DataFrame, required_columns: Iterable[str], context: str) -> None:
+        missing = [col for col in required_columns if col not in df.columns]
+        if missing:
+            raise KeyError(
+                f"Missing required column(s) for {context}: " + ", ".join(missing)
+            )
+
+    @staticmethod
+    def _to_number_or_none(value: Any) -> Optional[float]:
+        try:
+            converted = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        except Exception:
+            return None
+        if pd.isna(converted):
+            return None
+        return float(converted)
+
+    @classmethod
+    def _resolve_entity(cls, candidates: pd.DataFrame, *, entity_value: Any = None, entity_id: Any = None, id_col: str, name_col: str, entity_label: str) -> pd.Series:
+        candidates = candidates[[id_col, name_col]].dropna(subset=[id_col, name_col]).drop_duplicates()
+        if candidates.empty:
+            raise ValueError(f"No {entity_label} candidates available to resolve.")
+
+        if entity_id is None and isinstance(entity_value, (int, np.integer)):
+            entity_id = int(entity_value)
+            entity_value = None
+
+        if entity_id is not None:
+            requested_id_numeric = cls._to_number_or_none(entity_id)
+            if requested_id_numeric is not None:
+                candidate_id_numeric = pd.to_numeric(candidates[id_col], errors="coerce")
+                matches = candidates[candidate_id_numeric == requested_id_numeric]
+            else:
+                matches = candidates[candidates[id_col].astype(str).str.strip() == str(entity_id).strip()]
+
+            if len(matches) == 1:
+                return matches.iloc[0]
+            if len(matches) > 1:
+                options = sorted(matches[name_col].astype(str).unique().tolist())
+                raise ValueError(
+                    f"Ambiguous {entity_label} ID '{entity_id}'. Candidates: {', '.join(options)}"
+                )
+            raise ValueError(f"No {entity_label} found for ID '{entity_id}'.")
+
+        if entity_value is None:
+            raise ValueError(f"Please provide either {entity_label} name/surname or {entity_label} ID.")
+
+        query = cls._normalize_text(entity_value)
+        if not query:
+            raise ValueError(f"Invalid empty {entity_label} name input.")
+
+        working = candidates.copy()
+        working["_normalized_name"] = working[name_col].map(cls._normalize_text)
+        working["_name_tokens"] = working[name_col].map(cls._tokenize)
+
+        exact_matches = working[working["_normalized_name"] == query]
+        if len(exact_matches) == 1:
+            return exact_matches.iloc[0]
+        if len(exact_matches) > 1:
+            options = sorted(exact_matches[name_col].astype(str).unique().tolist())
+            raise ValueError(
+                f"Ambiguous {entity_label} name '{entity_value}'. Candidates: {', '.join(options)}"
+            )
+
+        query_tokens = set(cls._tokenize(query))
+        token_matches = working[
+            working["_name_tokens"].map(lambda tokens: query_tokens.issubset(set(tokens)))
+        ]
+
+        if len(token_matches) == 1:
+            return token_matches.iloc[0]
+        if len(token_matches) > 1:
+            options = sorted(token_matches[name_col].astype(str).unique().tolist())
+            raise ValueError(
+                f"Ambiguous {entity_label} input '{entity_value}'. Candidates: {', '.join(options)}"
+            )
+
+        raise ValueError(f"No {entity_label} found for input '{entity_value}'.")
+
+    @staticmethod
+    def _z_standardize(values: Union[pd.Series, Sequence[Any]], *, invert: bool = False, scale: float = 1.0) -> pd.Series:
+        series = pd.to_numeric(pd.Series(values), errors="coerce")
+        std = series.std(ddof=0)
+        if pd.isna(std) or std == 0:
+            return pd.Series(float("nan"), index=series.index)
+        z_values = (series - series.mean()) / std
+        if invert:
+            z_values = -z_values
+        return z_values * scale
+
+    @classmethod
+    def _is_rank_metric(cls, metric_name: str, raw_metric_name: Optional[str]) -> bool:
+        metric_token = str(metric_name).lower()
+        raw_metric_token = str(raw_metric_name).lower() if raw_metric_name is not None else ""
+        return ("rank" in metric_token) or ("rank" in raw_metric_token)
+
+    @classmethod
+    def _format_hover_line(cls, metric_name: str, raw_metric_name: Optional[str], metric_label: str, raw_value: Any, z_value: Any) -> str:
+        if raw_metric_name is None:
+            return f"Z-score = {z_value:.2f}" if pd.notna(z_value) else "Z-score = N/A"
+        if cls._is_rank_metric(metric_name, raw_metric_name):
+            return f"Rank =   # {int(round(raw_value))}" if pd.notna(raw_value) else "Rank =   # N/A"
+        raw_text = f"{raw_value:.2f}" if pd.notna(raw_value) else "N/A"
+        z_text = f"{z_value:.2f}" if pd.notna(z_value) else "N/A"
+        return f"{metric_label} = {raw_text}<br>Respective Z-score = {z_text}"
+
+    @classmethod
+    def _attach_hover_payload(cls, plot_df: pd.DataFrame, *, metric_cols: Sequence[str], metric_labels: Dict[str, str], metric_value_columns: Dict[str, Optional[str]], hover_payload_suffix: str = "_hover_payload", fill_missing_rank_z: bool = True, rank_z_scale: float = 2.0) -> pd.DataFrame:
+        for metric in metric_cols:
+            raw_metric = metric_value_columns.get(metric, metric.replace("z_", "", 1))
+
+            if metric not in plot_df.columns:
+                if (
+                    fill_missing_rank_z
+                    and raw_metric is not None
+                    and cls._is_rank_metric(metric, raw_metric)
+                    and raw_metric in plot_df.columns
+                ):
+                    plot_df[metric] = cls._z_standardize(
+                        plot_df[raw_metric],
+                        invert=True,
+                        scale=rank_z_scale,
+                    )
+                else:
+                    plot_df[metric] = float("nan")
+
+            metric_label = metric_labels.get(metric, format_metric(metric))
+            default_series = pd.Series(float("nan"), index=plot_df.index)
+            raw_values = pd.to_numeric(
+                plot_df.get(raw_metric, default_series),
+                errors="coerce",
+            )
+            z_values = pd.to_numeric(
+                plot_df.get(metric, default_series),
+                errors="coerce",
+            )
+
+            hover_lines = [
+                cls._format_hover_line(
+                    metric,
+                    raw_metric,
+                    metric_label,
+                    raw_value,
+                    z_value,
+                )
+                for raw_value, z_value in zip(raw_values, z_values)
+            ]
+
+            plot_df[f"{metric}{hover_payload_suffix}"] = list(
+                zip(
+                    [metric_label] * len(plot_df),
+                    raw_values,
+                    z_values,
+                    hover_lines,
+                )
+            )
+
+        return plot_df
+
+    @classmethod
+    def _split_pair_string(cls, pair_value: str) -> Tuple[str, str]:
+        if not isinstance(pair_value, str):
+            raise ValueError("CB_Pair must be a string such as 'A + B', 'A and B', or 'A & B'.")
+
+        parts = re.split(r"\s*(?:\+|&|\band\b)\s*", pair_value.strip(), maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            raise ValueError(
+                "Could not parse CB pair input. Use formats like 'A + B', 'A and B', or 'A & B'."
+            )
+        return parts[0].strip(), parts[1].strip()
+
+    @classmethod
+    def _build_average_point(cls, *, plot_df: pd.DataFrame, metric_cols: Sequence[str], metric_labels: Dict[str, str], metric_value_columns: Dict[str, Optional[str]], display_name_col: str, display_name_value: str, hover_payload_suffix: str = "_hover_payload") -> pd.Series:
+        avg_raw_metrics = pd.Series(
+            {
+                raw_col: pd.to_numeric(plot_df[raw_col], errors="coerce").mean()
+                for raw_col in set(metric_value_columns.values())
+                if raw_col is not None and raw_col in plot_df.columns
+            }
+        )
+        avg_z_scores = pd.Series(
+            {
+                z_col: pd.to_numeric(plot_df[z_col], errors="coerce").mean()
+                if z_col in plot_df.columns
+                else float("nan")
+                for z_col in metric_cols
+            }
+        )
+
+        average_point = avg_z_scores.copy()
+        for metric in metric_cols:
+            raw_metric = metric_value_columns.get(metric, metric.replace("z_", "", 1))
+            metric_label = metric_labels.get(metric, format_metric(metric))
+            avg_raw_value = avg_raw_metrics.get(raw_metric, float("nan"))
+            avg_z_value = average_point.get(metric, float("nan"))
+
+            if raw_metric is not None:
+                average_point[raw_metric] = avg_raw_value
+
+            average_point[f"{metric}{hover_payload_suffix}"] = [
+                metric_label,
+                avg_raw_value,
+                avg_z_value,
+                cls._format_hover_line(
+                    metric,
+                    raw_metric,
+                    metric_label,
+                    avg_raw_value,
+                    avg_z_value,
+                ),
+            ]
+
+        average_point[display_name_col] = display_name_value
+        return average_point
+
+
+class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver):
+    """
+    Reusable builder for single-CB and CB-vs-CB Ground-Duels distribution plots.
+    """
+
+    def __init__(self, *, duel_summary: pd.DataFrame, z_scores: pd.DataFrame, metrics: Sequence[str], metric_labels: Dict[str, str], metric_value_columns: Dict[str, str], min_num_duels_involved_in_threshold: Any, min_minutes_played_threshold: Any) -> None:
+        self.duel_summary = duel_summary
+        self.z_scores = z_scores
+        self.metrics = list(metrics)
+        self.metric_labels = dict(metric_labels)
+        self.metric_value_columns = dict(metric_value_columns)
+        self.min_num_duels_involved_in_threshold = min_num_duels_involved_in_threshold
+        self.min_minutes_played_threshold = min_minutes_played_threshold
+
+    def _build_plot_df(self) -> pd.DataFrame:
+        z_scores_df = self.z_scores.reset_index()
+        self._ensure_columns(
+            z_scores_df,
+            ["player.id", "player.name"],
+            "single-CB z-score dataframe",
+        )
+
+        raw_metric_columns = list(dict.fromkeys(self.metric_value_columns.values()))
+        duel_summary_df = self.duel_summary.reset_index()
+        self._ensure_columns(
+            duel_summary_df,
+            ["player.id", "player.name"] + raw_metric_columns,
+            "single-CB raw metrics dataframe",
+        )
+
+        raw_metrics_df = duel_summary_df[["player.id", "player.name"] + raw_metric_columns].copy()
+        plot_df = z_scores_df.merge(
+            raw_metrics_df,
+            on=["player.id", "player.name"],
+            how="left",
+            validate="one_to_one",
+        )
+
+        return self._attach_hover_payload(
+            plot_df,
+            metric_cols=self.metrics,
+            metric_labels=self.metric_labels,
+            metric_value_columns=self.metric_value_columns,
+            hover_payload_suffix="_hover_payload",
+            fill_missing_rank_z=False,
+        )
+
+    def _create_plot(self, subtitle_style: str = "single") -> DistributionPlot:
+        if subtitle_style == "comparison":
+            subtitle = (
+                f"Based on {len(self.z_scores)} CB players with ≥ {self.min_num_duels_involved_in_threshold} duels "
+                f"& playing time ≥ {self.min_minutes_played_threshold} minutes"
+            )
+        else:
+            subtitle = (
+                f"Based on {len(self.z_scores)} CB players with ≥ {self.min_num_duels_involved_in_threshold} duels "
+                f"and a playing time ≥ {self.min_minutes_played_threshold} minutes"
+            )
+
+        dist_plot = DistributionPlot(
+            columns=self.metrics,
+            labels=["←   Worse", "Average", "Better   →"],
+            quality_metric_labels=self.metric_labels,
+            quality_metric_value_columns=self.metric_value_columns,
+        )
+        dist_plot.add_title(
+            title="CB Ground Duel Quality Distribution",
+            subtitle=subtitle,
+        )
+        return dist_plot
+
+    def _resolve_single_cb(self, plot_df: pd.DataFrame, *, CB: Any = None, CB_ID: Any = None) -> pd.Series:
+        candidates = plot_df[["player.id", "player.name"]].drop_duplicates()
+        if CB is None and CB_ID is None:
+            return plot_df.iloc[0]
+
+        resolved = self._resolve_entity(
+            candidates,
+            entity_value=CB,
+            entity_id=CB_ID,
+            id_col="player.id",
+            name_col="player.name",
+            entity_label="CB player",
+        )
+        selected_rows = plot_df[plot_df["player.id"] == resolved["player.id"]]
+        if selected_rows.empty:
+            raise ValueError(f"Resolved CB '{resolved['player.name']}' is not available in plotting dataframe.")
+        return selected_rows.iloc[0]
+
+    def Plot_Single_CB(self, *, CB: Any = None, CB_ID: Any = None, include_league_average: bool = True, show: bool = True) -> DistributionPlot:
+        plot_df = self._build_plot_df()
+        dist_plot = self._create_plot(subtitle_style="single")
+
+        hover_payload_suffix = "_hover_payload"
+        hover_string = "%{customdata[3]}"
+
+        dist_plot.add_group_data(
+            df_plot=plot_df,
+            plots="",
+            names=plot_df["player.name"],
+            legend="All players",
+            hover=hover_payload_suffix,
+            hover_string=hover_string,
+        )
+
+        selected_cb = self._resolve_single_cb(plot_df, CB=CB, CB_ID=CB_ID)
+        dist_plot.add_data_point(
+            ser_plot=selected_cb,
+            plots="",
+            name=selected_cb["player.name"],
+            hover=hover_payload_suffix,
+            hover_string=hover_string,
+            add_annotations=True,
+        )
+
+        if include_league_average:
+            average_point = self._build_average_point(
+                plot_df=plot_df,
+                metric_cols=self.metrics,
+                metric_labels=self.metric_labels,
+                metric_value_columns=self.metric_value_columns,
+                display_name_col="player.name",
+                display_name_value="CBs' League Average",
+                hover_payload_suffix=hover_payload_suffix,
+            )
+            average_point["player.id"] = -1
+            dist_plot.add_data_point(
+                ser_plot=average_point,
+                plots="",
+                name="CBs' League Average",
+                hover=hover_payload_suffix,
+                hover_string=hover_string,
+                add_annotations=False,
+            )
+
+        if show:
+            dist_plot.fig.show()
+        return dist_plot
+
+    def Plot_CBs_Comparison(self, *, CBs: Optional[Sequence[Any]] = None, CB_IDs: Optional[Sequence[Any]] = None, include_league_average: bool = True, multi_annotations: bool = True, show: bool = True) -> DistributionPlot:
+        plot_df = self._build_plot_df()
+        dist_plot = self._create_plot(subtitle_style="comparison")
+
+        hover_payload_suffix = "_hover_payload"
+        hover_string = "%{customdata[3]}"
+
+        dist_plot.add_group_data(
+            df_plot=plot_df,
+            plots="",
+            names=plot_df["player.name"],
+            legend="All players",
+            hover=hover_payload_suffix,
+            hover_string=hover_string,
+        )
+
+        requested_items: List[Tuple[Any, Any]] = []
+        for cb_id in (CB_IDs or []):
+            requested_items.append((None, cb_id))
+        for cb_name in (CBs or []):
+            requested_items.append((cb_name, None))
+
+        if not requested_items:
+            raise ValueError("Please provide at least one CB in `CBs` and/or `CB_IDs`.")
+
+        used_ids = set()
+        for cb_name, cb_id in requested_items:
+            selected_cb = self._resolve_single_cb(plot_df, CB=cb_name, CB_ID=cb_id)
+            cb_unique_id = selected_cb["player.id"]
+            if cb_unique_id in used_ids:
+                continue
+            used_ids.add(cb_unique_id)
+
+            if multi_annotations:
+                dist_plot.add_data_point(
+                    ser_plot=selected_cb,
+                    plots="",
+                    name=selected_cb["player.name"],
+                    hover=hover_payload_suffix,
+                    hover_string=hover_string,
+                    add_single_annotations=False,
+                    add_multi_annotations=True,
+                )
+            else:
+                dist_plot.add_data_point(
+                    ser_plot=selected_cb,
+                    plots="",
+                    name=selected_cb["player.name"],
+                    hover=hover_payload_suffix,
+                    hover_string=hover_string,
+                    add_annotations=True,
+                )
+
+        if include_league_average:
+            average_point = self._build_average_point(
+                plot_df=plot_df,
+                metric_cols=self.metrics,
+                metric_labels=self.metric_labels,
+                metric_value_columns=self.metric_value_columns,
+                display_name_col="player.name",
+                display_name_value="CBs' League Average",
+                hover_payload_suffix=hover_payload_suffix,
+            )
+            average_point["player.id"] = -1
+            if multi_annotations:
+                dist_plot.add_data_point(
+                    ser_plot=average_point,
+                    plots="",
+                    name="CBs' League Average",
+                    hover=hover_payload_suffix,
+                    hover_string=hover_string,
+                    add_single_annotations=False,
+                    add_multi_annotations=True,
+                )
+            else:
+                dist_plot.add_data_point(
+                    ser_plot=average_point,
+                    plots="",
+                    name="CBs' League Average",
+                    hover=hover_payload_suffix,
+                    hover_string=hover_string,
+                    add_annotations=False,
+                )
+
+        if show:
+            dist_plot.fig.show()
+        return dist_plot
+
+
+class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver):
+    """
+    Reusable builder for CB-pair Ground-Duels distribution plots.
+    """
+
+    def __init__(self, *, df_ground_duel_pairs: pd.DataFrame, plot_metric_cols: Sequence[str], pair_metric_labels: Dict[str, str], pair_metric_value_columns: Dict[str, Optional[str]], min_num_duels_involved_in_threshold: Any, min_minutes_played_threshold: Any) -> None:
+        self.df_ground_duel_pairs = df_ground_duel_pairs
+        self.plot_metric_cols = list(plot_metric_cols)
+        self.pair_metric_labels = dict(pair_metric_labels)
+        self.pair_metric_value_columns = dict(pair_metric_value_columns)
+        self.min_num_duels_involved_in_threshold = min_num_duels_involved_in_threshold
+        self.min_minutes_played_threshold = min_minutes_played_threshold
+
+    def _prepare_plot_df(self) -> pd.DataFrame:
+        plot_df = self.df_ground_duel_pairs.copy()
+        self._ensure_columns(
+            plot_df,
+            ["pair_name", "CB_pair_fit_z_score"],
+            "CB-pair plotting dataframe",
+        )
+        return self._attach_hover_payload(
+            plot_df,
+            metric_cols=self.plot_metric_cols,
+            metric_labels=self.pair_metric_labels,
+            metric_value_columns=self.pair_metric_value_columns,
+            hover_payload_suffix="_hover_payload",
+            fill_missing_rank_z=True,
+            rank_z_scale=2.0,
+        )
+
+    def _create_plot(self) -> DistributionPlot:
+        dist_plot = DistributionPlot(
+            columns=self.plot_metric_cols,
+            labels=["←   Worse", "Average", "Better   →"],
+            quality_metric_labels=self.pair_metric_labels,
+            quality_metric_value_columns=self.pair_metric_value_columns,
+        )
+        dist_plot.add_title(
+            title="CB-Pair Ground Duels Quality Fit Distribution",
+            subtitle=(
+                f"All {len(self.df_ground_duel_pairs)} unordered CB pairs, with "
+                f"≥ {self.min_num_duels_involved_in_threshold} duels & playing time "
+                f"≥ {self.min_minutes_played_threshold} minutes (each individual CB)   |   "
+                "All metrics are CB-Pair-level (i.e. the weighted average of both players for that metric)"
+            ),
+        )
+        return dist_plot
+
+    def _player_candidates_from_pairs(self, plot_df: pd.DataFrame) -> pd.DataFrame:
+        self._ensure_columns(
+            plot_df,
+            ["player.id_CB1", "player.name_CB1", "player.id_CB2", "player.name_CB2"],
+            "CB-pair player resolution",
+        )
+        cb1 = plot_df[["player.id_CB1", "player.name_CB1"]].rename(
+            columns={"player.id_CB1": "player.id", "player.name_CB1": "player.name"}
+        )
+        cb2 = plot_df[["player.id_CB2", "player.name_CB2"]].rename(
+            columns={"player.id_CB2": "player.id", "player.name_CB2": "player.name"}
+        )
+        return pd.concat([cb1, cb2], ignore_index=True).drop_duplicates()
+
+    def _resolve_pair_row(self, plot_df: pd.DataFrame, *, CB_Pair: Any = None, CB_1: Any = None, CB_2: Any = None, CB_1_ID: Any = None, CB_2_ID: Any = None) -> Optional[pd.Series]:
+        if (
+            CB_Pair is None
+            and CB_1 is None
+            and CB_2 is None
+            and CB_1_ID is None
+            and CB_2_ID is None
+        ):
+            return None
+
+        if CB_Pair is not None:
+            if isinstance(CB_Pair, str):
+                CB_1, CB_2 = self._split_pair_string(CB_Pair)
+            elif isinstance(CB_Pair, (list, tuple)) and len(CB_Pair) == 2:
+                CB_1, CB_2 = CB_Pair[0], CB_Pair[1]
+            elif isinstance(CB_Pair, dict):
+                CB_1 = CB_Pair.get("CB_1", CB_1)
+                CB_2 = CB_Pair.get("CB_2", CB_2)
+                CB_1_ID = CB_Pair.get("CB_1_ID", CB_1_ID)
+                CB_2_ID = CB_Pair.get("CB_2_ID", CB_2_ID)
+                if CB_Pair.get("CB_Pair") is not None:
+                    CB_1, CB_2 = self._split_pair_string(CB_Pair["CB_Pair"])
+            else:
+                raise ValueError(
+                    "CB_Pair must be a string ('A + B', 'A and B', 'A & B'), "
+                    "a tuple/list of two CB inputs, or a dict with CB_1/CB_2 keys."
+                )
+
+        if (CB_1 is None and CB_1_ID is None) or (CB_2 is None and CB_2_ID is None):
+            raise ValueError("Please provide both CB_1 and CB_2 (name/surname and/or ID).")
+
+        candidates = self._player_candidates_from_pairs(plot_df)
+        resolved_cb1 = self._resolve_entity(
+            candidates,
+            entity_value=CB_1,
+            entity_id=CB_1_ID,
+            id_col="player.id",
+            name_col="player.name",
+            entity_label="CB player",
+        )
+        resolved_cb2 = self._resolve_entity(
+            candidates,
+            entity_value=CB_2,
+            entity_id=CB_2_ID,
+            id_col="player.id",
+            name_col="player.name",
+            entity_label="CB player",
+        )
+
+        id_1 = resolved_cb1["player.id"]
+        id_2 = resolved_cb2["player.id"]
+        pair_mask = (
+            ((plot_df["player.id_CB1"] == id_1) & (plot_df["player.id_CB2"] == id_2))
+            | ((plot_df["player.id_CB1"] == id_2) & (plot_df["player.id_CB2"] == id_1))
+        )
+        matches = plot_df[pair_mask]
+        if matches.empty:
+            raise ValueError(
+                f"No CB pair found for '{resolved_cb1['player.name']}' + '{resolved_cb2['player.name']}'."
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Multiple rows found for pair '{resolved_cb1['player.name']}' + '{resolved_cb2['player.name']}'."
+            )
+        return matches.iloc[0]
+
+    def _pair_key(self, row: pd.Series) -> str:
+        if "pair_key" in row.index and pd.notna(row["pair_key"]):
+            return str(row["pair_key"])
+        return str(row.get("pair_name", ""))
+
+    def _add_row_point(self, dist_plot: DistributionPlot, *, row: pd.Series, display_name: str, hover_payload_suffix: str, hover_string: str, multi_annotations: bool, add_single_annotations: bool) -> None:
+        if multi_annotations:
+            dist_plot.add_data_point(
+                ser_plot=row,
+                plots="",
+                name=display_name,
+                hover=hover_payload_suffix,
+                hover_string=hover_string,
+                add_single_annotations=False,
+                add_multi_annotations=True,
+            )
+        else:
+            dist_plot.add_data_point(
+                ser_plot=row,
+                plots="",
+                name=display_name,
+                hover=hover_payload_suffix,
+                hover_string=hover_string,
+                add_annotations=add_single_annotations,
+            )
+
+    def Plot_CB_Pair(self, *, CB_Pair: Any = None, CB_1: Any = None, CB_2: Any = None, CB_1_ID: Any = None, CB_2_ID: Any = None, include_best: bool = True, include_worst: bool = False, include_average: bool = False, multi_annotations: bool = False, show: bool = True) -> DistributionPlot:
+        plot_df = self._prepare_plot_df()
+        dist_plot = self._create_plot()
+
+        hover_payload_suffix = "_hover_payload"
+        hover_string = "%{customdata[3]}"
+
+        dist_plot.add_group_data(
+            df_plot=plot_df,
+            plots="",
+            names=plot_df["pair_name"],
+            legend="All pairs",
+            hover=hover_payload_suffix,
+            hover_string=hover_string,
+        )
+
+        used_keys = set()
+
+        selected_pair = self._resolve_pair_row(
+            plot_df,
+            CB_Pair=CB_Pair,
+            CB_1=CB_1,
+            CB_2=CB_2,
+            CB_1_ID=CB_1_ID,
+            CB_2_ID=CB_2_ID,
+        )
+        if selected_pair is not None:
+            key = self._pair_key(selected_pair)
+            used_keys.add(key)
+            self._add_row_point(
+                dist_plot,
+                row=selected_pair,
+                display_name=selected_pair["pair_name"],
+                hover_payload_suffix=hover_payload_suffix,
+                hover_string=hover_string,
+                multi_annotations=multi_annotations,
+                add_single_annotations=True,
+            )
+
+        if include_best:
+            best_pair = plot_df.sort_values("CB_pair_fit_z_score", ascending=False).iloc[0]
+            key = self._pair_key(best_pair)
+            if key not in used_keys:
+                used_keys.add(key)
+                self._add_row_point(
+                    dist_plot,
+                    row=best_pair,
+                    display_name=best_pair["pair_name"],
+                    hover_payload_suffix=hover_payload_suffix,
+                    hover_string=hover_string,
+                    multi_annotations=multi_annotations,
+                    add_single_annotations=True,
+                )
+
+        if include_worst:
+            worst_pair = plot_df.sort_values("CB_pair_fit_z_score", ascending=True).iloc[0]
+            key = self._pair_key(worst_pair)
+            if key not in used_keys:
+                used_keys.add(key)
+                self._add_row_point(
+                    dist_plot,
+                    row=worst_pair,
+                    display_name=worst_pair["pair_name"],
+                    hover_payload_suffix=hover_payload_suffix,
+                    hover_string=hover_string,
+                    multi_annotations=multi_annotations,
+                    add_single_annotations=True,
+                )
+
+        if include_average:
+            average_point = self._build_average_point(
+                plot_df=plot_df,
+                metric_cols=self.plot_metric_cols,
+                metric_labels=self.pair_metric_labels,
+                metric_value_columns=self.pair_metric_value_columns,
+                display_name_col="pair_name",
+                display_name_value="CB-Pairs' League Average",
+                hover_payload_suffix=hover_payload_suffix,
+            )
+            average_point["pair_key"] = "__pair_average__"
+            self._add_row_point(
+                dist_plot,
+                row=average_point,
+                display_name="CB-Pairs' League Average",
+                hover_payload_suffix=hover_payload_suffix,
+                hover_string=hover_string,
+                multi_annotations=multi_annotations,
+                add_single_annotations=False,
+            )
+
+        if show:
+            dist_plot.fig.show()
+        return dist_plot
+
+    def Plot_CB_Pairs_Comparison(self, *, CB_Pairs: Optional[Sequence[Union[str, Sequence[Any], Dict[str, Any]]]] = None, include_best: bool = False, include_worst: bool = False, include_average: bool = False, multi_annotations: bool = True, show: bool = True) -> DistributionPlot:
+        plot_df = self._prepare_plot_df()
+        dist_plot = self._create_plot()
+
+        hover_payload_suffix = "_hover_payload"
+        hover_string = "%{customdata[3]}"
+
+        dist_plot.add_group_data(
+            df_plot=plot_df,
+            plots="",
+            names=plot_df["pair_name"],
+            legend="All pairs",
+            hover=hover_payload_suffix,
+            hover_string=hover_string,
+        )
+
+        specs: List[Dict[str, Any]] = []
+        for item in (CB_Pairs or []):
+            if isinstance(item, str):
+                specs.append({"CB_Pair": item})
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                specs.append({"CB_1": item[0], "CB_2": item[1]})
+            elif isinstance(item, dict):
+                specs.append(dict(item))
+            else:
+                raise ValueError(
+                    "Each item in CB_Pairs must be either a pair string, a tuple/list of length 2, or a dict with CB_1/CB_2."
+                )
+
+        if not specs and not any([include_best, include_worst, include_average]):
+            raise ValueError(
+                "Please provide CB_Pairs and/or enable at least one of include_best/include_worst/include_average."
+            )
+
+        used_keys = set()
+
+        for spec in specs:
+            selected_pair = self._resolve_pair_row(
+                plot_df,
+                CB_Pair=spec.get("CB_Pair"),
+                CB_1=spec.get("CB_1"),
+                CB_2=spec.get("CB_2"),
+                CB_1_ID=spec.get("CB_1_ID"),
+                CB_2_ID=spec.get("CB_2_ID"),
+            )
+            if selected_pair is None:
+                continue
+
+            key = self._pair_key(selected_pair)
+            if key in used_keys:
+                continue
+            used_keys.add(key)
+
+            self._add_row_point(
+                dist_plot,
+                row=selected_pair,
+                display_name=selected_pair["pair_name"],
+                hover_payload_suffix=hover_payload_suffix,
+                hover_string=hover_string,
+                multi_annotations=multi_annotations,
+                add_single_annotations=True,
+            )
+
+        if include_best:
+            best_pair = plot_df.sort_values("CB_pair_fit_z_score", ascending=False).iloc[0]
+            key = self._pair_key(best_pair)
+            if key not in used_keys:
+                used_keys.add(key)
+                self._add_row_point(
+                    dist_plot,
+                    row=best_pair,
+                    display_name=best_pair["pair_name"],
+                    hover_payload_suffix=hover_payload_suffix,
+                    hover_string=hover_string,
+                    multi_annotations=multi_annotations,
+                    add_single_annotations=True,
+                )
+
+        if include_worst:
+            worst_pair = plot_df.sort_values("CB_pair_fit_z_score", ascending=True).iloc[0]
+            key = self._pair_key(worst_pair)
+            if key not in used_keys:
+                used_keys.add(key)
+                self._add_row_point(
+                    dist_plot,
+                    row=worst_pair,
+                    display_name=worst_pair["pair_name"],
+                    hover_payload_suffix=hover_payload_suffix,
+                    hover_string=hover_string,
+                    multi_annotations=multi_annotations,
+                    add_single_annotations=True,
+                )
+
+        if include_average:
+            average_point = self._build_average_point(
+                plot_df=plot_df,
+                metric_cols=self.plot_metric_cols,
+                metric_labels=self.pair_metric_labels,
+                metric_value_columns=self.pair_metric_value_columns,
+                display_name_col="pair_name",
+                display_name_value="CB-Pairs' League Average",
+                hover_payload_suffix=hover_payload_suffix,
+            )
+            average_point["pair_key"] = "__pair_average__"
+            self._add_row_point(
+                dist_plot,
+                row=average_point,
+                display_name="CB-Pairs' League Average",
+                hover_payload_suffix=hover_payload_suffix,
+                hover_string=hover_string,
+                multi_annotations=multi_annotations,
+                add_single_annotations=False,
+            )
+
+        if show:
+            dist_plot.fig.show()
+        return dist_plot
+
+
+class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver):
+    """
+    Reusable builder for anchor-to-partner (directional) companion-fit Ground-Duels distribution plots.
+    """
+
+    def __init__(self, *, df_ground_duel_companion_fit: pd.DataFrame, companion_plot_metric_cols: Sequence[str], companion_metric_labels: Dict[str, str], companion_metric_value_columns: Dict[str, Optional[str]]) -> None:
+        self.df_ground_duel_companion_fit = df_ground_duel_companion_fit
+        self.companion_plot_metric_cols = list(companion_plot_metric_cols)
+        self.companion_metric_labels = dict(companion_metric_labels)
+        self.companion_metric_value_columns = dict(companion_metric_value_columns)
+        self._anchor_player_id: Optional[Any] = None
+        self._anchor_player_name: Optional[str] = None
+
+    def _anchor_candidates(self) -> pd.DataFrame:
+        self._ensure_columns(
+            self.df_ground_duel_companion_fit,
+            ["anchor_player_name"],
+            "companion-fit anchor resolution",
+        )
+        if "anchor_player_id" in self.df_ground_duel_companion_fit.columns:
+            return self.df_ground_duel_companion_fit[
+                ["anchor_player_id", "anchor_player_name"]
+            ].drop_duplicates()
+
+        candidates = self.df_ground_duel_companion_fit[["anchor_player_name"]].drop_duplicates().copy()
+        candidates["anchor_player_id"] = np.arange(len(candidates))
+        return candidates
+
+    def _resolve_anchor(self, *, Anchor_CB: Any = None, Anchor_CB_ID: Any = None) -> pd.Series:
+        candidates = self._anchor_candidates()
+
+        if Anchor_CB is None and Anchor_CB_ID is None:
+            if self._anchor_player_name is not None:
+                cached_by_name = candidates[
+                    candidates["anchor_player_name"].map(self._normalize_text)
+                    == self._normalize_text(self._anchor_player_name)
+                ]
+                if not cached_by_name.empty:
+                    return cached_by_name.iloc[0]
+            return candidates.sort_values("anchor_player_name").iloc[0]
+
+        if (
+            Anchor_CB_ID is not None
+            and "anchor_player_id" not in self.df_ground_duel_companion_fit.columns
+        ):
+            raise ValueError(
+                "Anchor_CB_ID was provided, but `anchor_player_id` is not available in the companion dataframe."
+            )
+
+        return self._resolve_entity(
+            candidates,
+            entity_value=Anchor_CB,
+            entity_id=Anchor_CB_ID,
+            id_col="anchor_player_id",
+            name_col="anchor_player_name",
+            entity_label="anchor CB",
+        )
+
+    def Initialize_Desired_Anchor_CB(self, *, Anchor_CB: Any = None, Anchor_CB_ID: Any = None) -> pd.Series:
+        resolved_anchor = self._resolve_anchor(Anchor_CB=Anchor_CB, Anchor_CB_ID=Anchor_CB_ID)
+        self._anchor_player_id = resolved_anchor.get("anchor_player_id", None)
+        self._anchor_player_name = str(resolved_anchor["anchor_player_name"])
+        return resolved_anchor
+
+    def _build_anchor_plot_df(self, *, anchor_name: str, anchor_id: Any = None, top_n: Optional[int] = None) -> pd.DataFrame:
+        plot_df = self.df_ground_duel_companion_fit.copy()
+        self._ensure_columns(
+            plot_df,
+            ["anchor_player_name", "partner_player_name", "companion_fit_score"],
+            "companion-fit plotting dataframe",
+        )
+
+        if anchor_id is not None and "anchor_player_id" in plot_df.columns:
+            filtered = plot_df[plot_df["anchor_player_id"] == anchor_id].copy()
+            if filtered.empty:
+                filtered = plot_df[
+                    plot_df["anchor_player_name"].map(self._normalize_text)
+                    == self._normalize_text(anchor_name)
+                ].copy()
+        else:
+            filtered = plot_df[
+                plot_df["anchor_player_name"].map(self._normalize_text)
+                == self._normalize_text(anchor_name)
+            ].copy()
+
+        if filtered.empty:
+            raise ValueError(f"No companion-fit rows found for anchor CB '{anchor_name}'.")
+
+        if "coverage_gain_z_within_anchor" not in filtered.columns and "coverage_gain_raw" in filtered.columns:
+            filtered["coverage_gain_z_within_anchor"] = self._z_standardize(filtered["coverage_gain_raw"])
+
+        if "companion_fit_score_z_within_anchor" not in filtered.columns:
+            filtered["companion_fit_score_z_within_anchor"] = self._z_standardize(
+                filtered["companion_fit_score"]
+            )
+
+        if "companion_rank_for_anchor_z_score" not in filtered.columns:
+            if "companion_rank_for_anchor" in filtered.columns:
+                filtered["companion_rank_for_anchor_z_score"] = self._z_standardize(
+                    filtered["companion_rank_for_anchor"],
+                    invert=True,
+                    scale=2.0,
+                )
+            else:
+                filtered["companion_rank_for_anchor_z_score"] = float("nan")
+
+        filtered = filtered.sort_values(
+            ["companion_fit_score", "partner_player_name"],
+            ascending=[False, True],
+        ).reset_index(drop=True)
+
+        if top_n is not None:
+            if not isinstance(top_n, (int, np.integer)) or int(top_n) <= 0:
+                raise ValueError("top_n must be a positive integer or None.")
+            filtered = filtered.head(int(top_n)).copy().reset_index(drop=True)
+
+        return self._attach_hover_payload(
+            filtered,
+            metric_cols=self.companion_plot_metric_cols,
+            metric_labels=self.companion_metric_labels,
+            metric_value_columns=self.companion_metric_value_columns,
+            hover_payload_suffix="_hover_payload",
+            fill_missing_rank_z=True,
+            rank_z_scale=2.0,
+        )
+
+    def _resolve_companion_row(self, plot_df: pd.DataFrame, *, Companion_CB: Any = None, Companion_CB_ID: Any = None) -> Optional[pd.Series]:
+        if Companion_CB is None and Companion_CB_ID is None:
+            return None
+
+        self._ensure_columns(
+            plot_df,
+            ["partner_player_name"],
+            "companion selection",
+        )
+
+        has_partner_id = "partner_player_id" in plot_df.columns
+        if Companion_CB_ID is not None and not has_partner_id:
+            raise ValueError(
+                "Companion_CB_ID was provided, but `partner_player_id` is not available in the companion dataframe."
+            )
+
+        if has_partner_id:
+            candidates = plot_df[["partner_player_id", "partner_player_name"]].drop_duplicates().rename(
+                columns={"partner_player_id": "player.id", "partner_player_name": "player.name"}
+            )
+            resolved = self._resolve_entity(
+                candidates,
+                entity_value=Companion_CB,
+                entity_id=Companion_CB_ID,
+                id_col="player.id",
+                name_col="player.name",
+                entity_label="companion CB",
+            )
+            matches = plot_df[plot_df["partner_player_id"] == resolved["player.id"]]
+        else:
+            candidates = plot_df[["partner_player_name"]].drop_duplicates().copy()
+            candidates["player.id"] = np.arange(len(candidates))
+            candidates = candidates.rename(columns={"partner_player_name": "player.name"})
+            resolved = self._resolve_entity(
+                candidates,
+                entity_value=Companion_CB,
+                entity_id=None,
+                id_col="player.id",
+                name_col="player.name",
+                entity_label="companion CB",
+            )
+            matches = plot_df[
+                plot_df["partner_player_name"].map(self._normalize_text)
+                == self._normalize_text(resolved["player.name"])
+            ]
+
+        if matches.empty:
+            raise ValueError(f"No companion fit found for '{Companion_CB}'.")
+        return matches.iloc[0]
+
+    def _companion_key(self, row: pd.Series) -> str:
+        if "partner_player_id" in row.index and pd.notna(row["partner_player_id"]):
+            return str(row["partner_player_id"])
+        return self._normalize_text(row.get("partner_player_name", ""))
+
+    def _add_row_point(self, dist_plot: DistributionPlot, *, row: pd.Series, display_name: str, hover_payload_suffix: str, hover_string: str, multi_annotations: bool, add_single_annotations: bool) -> None:
+        if multi_annotations:
+            dist_plot.add_data_point(
+                ser_plot=row,
+                plots="",
+                name=display_name,
+                hover=hover_payload_suffix,
+                hover_string=hover_string,
+                add_single_annotations=False,
+                add_multi_annotations=True,
+            )
+        else:
+            dist_plot.add_data_point(
+                ser_plot=row,
+                plots="",
+                name=display_name,
+                hover=hover_payload_suffix,
+                hover_string=hover_string,
+                add_annotations=add_single_annotations,
+            )
+
+    def _create_plot(self, *, anchor_name: str, num_candidates: int) -> DistributionPlot:
+        dist_plot = DistributionPlot(
+            columns=self.companion_plot_metric_cols,
+            labels=["←   Worse", "Average", "Better   →"],
+            quality_metric_labels=self.companion_metric_labels,
+            quality_metric_value_columns=self.companion_metric_value_columns,
+        )
+        dist_plot.add_title(
+            title=f"CB-Companion Ground Duels Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
+            subtitle=(
+                f"All {num_candidates} potential companions for {anchor_name} (directional A -> B)   |   "
+                "Metrics are at the CB-Companion-level (i.e. within the Anchor CB's sample), showing the expected contribution of the companion to "
+                "the CB-Pair's overall fit with the specified Anchor CB."
+            ),
+        )
+        return dist_plot
+
+    def Plot_Companion_of_Anchor_CB( self, *, Anchor_CB: Any = None, Anchor_CB_ID: Any = None, Companion_CB: Any = None, Companion_CB_ID: Any = None, include_best: bool = True, include_worst: bool = False, include_anchor_CB_pool_average: bool = False, top_n: Optional[int] = None, multi_annotations: bool = False, show: bool = True) -> DistributionPlot:
+        resolved_anchor = self.Initialize_Desired_Anchor_CB(
+            Anchor_CB=Anchor_CB,
+            Anchor_CB_ID=Anchor_CB_ID,
+        )
+        anchor_name = str(resolved_anchor["anchor_player_name"])
+        anchor_id = resolved_anchor.get("anchor_player_id", None)
+
+        plot_df = self._build_anchor_plot_df(
+            anchor_name=anchor_name,
+            anchor_id=anchor_id,
+            top_n=top_n,
+        )
+        dist_plot = self._create_plot(anchor_name=anchor_name, num_candidates=len(plot_df))
+
+        hover_payload_suffix = "_hover_payload"
+        hover_string = "%{customdata[3]}"
+
+        dist_plot.add_group_data(
+            df_plot=plot_df,
+            plots="",
+            names=plot_df["partner_player_name"],
+            legend="All companions",
+            hover=hover_payload_suffix,
+            hover_string=hover_string,
+        )
+
+        used_keys = set()
+
+        selected_companion = self._resolve_companion_row(
+            plot_df,
+            Companion_CB=Companion_CB,
+            Companion_CB_ID=Companion_CB_ID,
+        )
+        if selected_companion is not None:
+            selected_key = self._companion_key(selected_companion)
+            used_keys.add(selected_key)
+            selected_label = f"{anchor_name} + {selected_companion['partner_player_name']}"
+            self._add_row_point(
+                dist_plot,
+                row=selected_companion,
+                display_name=selected_label,
+                hover_payload_suffix=hover_payload_suffix,
+                hover_string=hover_string,
+                multi_annotations=multi_annotations,
+                add_single_annotations=True,
+            )
+
+        if include_best:
+            best_companion = plot_df.sort_values("companion_fit_score", ascending=False).iloc[0]
+            best_key = self._companion_key(best_companion)
+            if best_key not in used_keys:
+                used_keys.add(best_key)
+                best_label = f"{anchor_name} + {best_companion['partner_player_name']}"
+                self._add_row_point(
+                    dist_plot,
+                    row=best_companion,
+                    display_name=best_label,
+                    hover_payload_suffix=hover_payload_suffix,
+                    hover_string=hover_string,
+                    multi_annotations=multi_annotations,
+                    add_single_annotations=True,
+                )
+
+        if include_worst:
+            worst_companion = plot_df.sort_values("companion_fit_score", ascending=True).iloc[0]
+            worst_key = self._companion_key(worst_companion)
+            if worst_key not in used_keys:
+                used_keys.add(worst_key)
+                worst_label = f"{anchor_name} + {worst_companion['partner_player_name']}"
+                self._add_row_point(
+                    dist_plot,
+                    row=worst_companion,
+                    display_name=worst_label,
+                    hover_payload_suffix=hover_payload_suffix,
+                    hover_string=hover_string,
+                    multi_annotations=multi_annotations,
+                    add_single_annotations=True,
+                )
+
+        if include_anchor_CB_pool_average:
+            average_point = self._build_average_point(
+                plot_df=plot_df,
+                metric_cols=self.companion_plot_metric_cols,
+                metric_labels=self.companion_metric_labels,
+                metric_value_columns=self.companion_metric_value_columns,
+                display_name_col="partner_player_name",
+                display_name_value="Companion Pool Average",
+                hover_payload_suffix=hover_payload_suffix,
+            )
+            average_point["partner_player_id"] = -1
+            average_label = f"{anchor_name}'s Companion Pool Average"
+            self._add_row_point(
+                dist_plot,
+                row=average_point,
+                display_name=average_label,
+                hover_payload_suffix=hover_payload_suffix,
+                hover_string=hover_string,
+                multi_annotations=multi_annotations,
+                add_single_annotations=False,
+            )
+
+        if show:
+            dist_plot.fig.show()
+        return dist_plot
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------
