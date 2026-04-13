@@ -8,6 +8,7 @@ personality distribution views built with Plotly.
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
+import plotly.io as pio
 import numpy as np
 import pandas as pd
 import re
@@ -17,7 +18,7 @@ import unicodedata
 from utils.sentences import format_metric
 from classes.data_point import Player, Country, Person
 from classes.data_source import PlayerStats, CountryStats, PersonStat
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 
 def hex_to_rgb(hex_color: str) -> tuple:
@@ -854,13 +855,19 @@ class _Ground_Duels_Distribution_Resolver:
         for metric in metric_cols:
             raw_metric = metric_value_columns.get(metric, metric.replace("z_", "", 1))
 
-            if metric not in plot_df.columns:
-                if (
-                    fill_missing_rank_z
-                    and raw_metric is not None
-                    and cls._is_rank_metric(metric, raw_metric)
-                    and raw_metric in plot_df.columns
-                ):
+            can_backfill_rank_z = (
+                fill_missing_rank_z
+                and raw_metric is not None
+                and cls._is_rank_metric(metric, raw_metric)
+                and raw_metric in plot_df.columns
+            )
+            metric_missing = metric not in plot_df.columns
+            metric_all_nan = False
+            if not metric_missing:
+                metric_all_nan = pd.to_numeric(plot_df[metric], errors="coerce").isna().all()
+
+            if metric_missing or (can_backfill_rank_z and metric_all_nan):
+                if can_backfill_rank_z:
                     plot_df[metric] = cls._z_standardize(
                         plot_df[raw_metric],
                         invert=True,
@@ -958,22 +965,228 @@ class _Ground_Duels_Distribution_Resolver:
         average_point[display_name_col] = display_name_value
         return average_point
 
+    @classmethod
+    def _resolve_metric_config(
+        cls,
+        *,
+        default_metrics: Sequence[str],
+        default_metric_labels: Mapping[str, str],
+        default_metric_value_columns: Mapping[str, Optional[str]],
+        configured_metrics: Optional[Sequence[str]] = None,
+        configured_metric_labels: Optional[Mapping[str, str]] = None,
+        configured_metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+        override_metrics: Optional[Sequence[str]] = None,
+        override_metric_labels: Optional[Mapping[str, str]] = None,
+        override_metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+    ) -> Tuple[List[str], Dict[str, str], Dict[str, Optional[str]]]:
+        """
+        Resolve the metric configuration for one plotting call.
+
+        Precedence:
+        1. Method-level overrides (`override_*`)
+        2. Constructor-level settings (`configured_*`)
+        3. Class defaults (`default_*`)
+
+        Returns only the mappings required by the selected metrics.
+        """
+        chosen_metrics = override_metrics
+        if chosen_metrics is None:
+            chosen_metrics = configured_metrics
+        if chosen_metrics is None:
+            chosen_metrics = default_metrics
+
+        ordered_metrics: List[str] = []
+        for metric in chosen_metrics:
+            metric_str = str(metric)
+            if metric_str not in ordered_metrics:
+                ordered_metrics.append(metric_str)
+        if not ordered_metrics:
+            raise ValueError("At least one metric must be provided for the distribution plot.")
+
+        resolved_labels = dict(default_metric_labels)
+        if configured_metric_labels:
+            resolved_labels.update(dict(configured_metric_labels))
+        if override_metric_labels:
+            resolved_labels.update(dict(override_metric_labels))
+        metric_labels = {
+            metric: resolved_labels.get(metric, format_metric(metric))
+            for metric in ordered_metrics
+        }
+
+        resolved_value_columns: Dict[str, Optional[str]] = dict(default_metric_value_columns)
+        if configured_metric_value_columns:
+            resolved_value_columns.update(dict(configured_metric_value_columns))
+        if override_metric_value_columns:
+            resolved_value_columns.update(dict(override_metric_value_columns))
+        metric_value_columns = {
+            metric: resolved_value_columns.get(metric, metric.replace("z_", "", 1))
+            for metric in ordered_metrics
+        }
+
+        return ordered_metrics, metric_labels, metric_value_columns
+
+    @staticmethod
+    def _show_figures_side_by_side(
+        figures: Sequence[go.Figure],
+        *,
+        column_gap: str = "16px",
+        min_column_width_px: int = 520,
+    ) -> bool:
+        """
+        Display Plotly figures side-by-side in notebook environments.
+
+        Returns `True` when HTML notebook rendering succeeds. Callers can fall back to sequential `.show()` rendering when `False` is returned.
+        """
+        if not figures:
+            return False
+
+        try:
+            from IPython.display import HTML, display  # type: ignore
+        except Exception:
+            return False
+
+        try:
+            blocks = []
+            for idx, fig in enumerate(figures):
+                include_plotlyjs = "cdn" if idx == 0 else False
+                fig_html = pio.to_html(
+                    fig,
+                    include_plotlyjs=include_plotlyjs,
+                    full_html=False,
+                )
+                blocks.append(
+                    (
+                        "<div style='flex:1 1 "
+                        f"{min_column_width_px}px;min-width:{min_column_width_px}px'>"
+                        f"{fig_html}</div>"
+                    )
+                )
+
+            container_html = (
+                "<div style='display:flex;flex-wrap:wrap;"
+                f"gap:{column_gap};align-items:flex-start'>{''.join(blocks)}</div>"
+            )
+            display(HTML(container_html))
+            return True
+        except Exception:
+            return False
+
 
 class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver):
     """
-    Reusable builder for single-CB and CB-vs-CB Ground-Duels distribution plots.
+    Build Ground-Duels distribution plots for:
+    1. One selected CB against the full cohort
+    2. Multiple selected CBs in comparison mode
+
+    The class ships with sensible defaults for metrics, labels, and raw-value mappings. Users can still override configuration at construction time or per plotting call.
     """
 
-    def __init__(self, *, duel_summary: pd.DataFrame, z_scores: pd.DataFrame, metrics: Sequence[str], metric_labels: Dict[str, str], metric_value_columns: Dict[str, str], min_num_duels_involved_in_threshold: Any, min_minutes_played_threshold: Any) -> None:
+    DEFAULT_METRICS = [
+        "z_duels_per90",
+        "z_card_discipline",
+        "z_discipline",
+        "z_interceptions_per90",
+        "z_duel_success_rate",
+        "z_possession_win_rate",
+        "CB_ground_duels_quality_z_score",
+        "CB_rank_for_ground_duels_quality_z_score"
+    ]
+
+
+    DEFAULT_METRIC_LABELS = {
+        "z_duels_per90": "Ground Duels per-90",
+        "z_card_discipline": "Card Discipline",
+        "z_discipline": "(Overall) Discipline",
+        "z_interceptions_per90": "Interceptions per-90",
+        "z_duel_success_rate": "Ground Duel Success Rate",
+        "z_possession_win_rate": "Possession Win Rate",
+        "CB_ground_duels_quality_z_score": "CB's (Overall) Ground Duels Quality Score",
+        "CB_rank_for_ground_duels_quality_z_score": "CB's (Ground Duels Quality) Ranking",
+        "CB_rank_for_ground_duels_quality": "CB's (Ground Duels Quality) Ranking"
+    }
+
+
+    DEFAULT_METRIC_VALUE_COLUMNS = {
+        "z_duels_per90": "duels_per90",
+        "z_card_discipline": "card_discipline",
+        "z_discipline": "discipline",
+        "z_interceptions_per90": "interceptions_per90",
+        "z_duel_success_rate": "duel_success_rate",
+        "z_possession_win_rate": "possession_win_rate",
+        "CB_ground_duels_quality_z_score": None,
+        "CB_rank_for_ground_duels_quality_z_score": "CB_rank_for_ground_duels_quality",
+    }
+
+
+    RANK_Z_SCORE_SCALE = 2.0
+
+
+    def __init__(
+        self,
+        *,
+        duel_summary: pd.DataFrame,
+        z_scores: pd.DataFrame,
+        metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, str]] = None,
+        min_num_duels_involved_in_threshold: Any,
+        min_minutes_played_threshold: Any,
+    ) -> None:
+        """
+        Args:
+            duel_summary: Raw single-CB metric dataframe.
+            z_scores: Z-scored single-CB metric dataframe.
+            metrics: Optional constructor-level metric list.
+            metric_labels: Optional constructor-level metric label map.
+            metric_value_columns: Optional constructor-level raw-value column map.
+            min_num_duels_involved_in_threshold: Threshold shown in subtitles.
+            min_minutes_played_threshold: Threshold shown in subtitles.
+        """
         self.duel_summary = duel_summary
         self.z_scores = z_scores
-        self.metrics = list(metrics)
-        self.metric_labels = dict(metric_labels)
-        self.metric_value_columns = dict(metric_value_columns)
+        self._configured_metrics = list(metrics) if metrics is not None else None
+        self._configured_metric_labels = (
+            dict(metric_labels) if metric_labels is not None else None
+        )
+        self._configured_metric_value_columns = (
+            dict(metric_value_columns) if metric_value_columns is not None else None
+        )
         self.min_num_duels_involved_in_threshold = min_num_duels_involved_in_threshold
         self.min_minutes_played_threshold = min_minutes_played_threshold
 
-    def _build_plot_df(self) -> pd.DataFrame:
+    def _resolve_current_metric_config(
+        self,
+        *,
+        metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+    ) -> Tuple[List[str], Dict[str, str], Dict[str, Optional[str]]]:
+        """
+        Resolve call-ready metric configuration with precedence:
+        method override > constructor config > class defaults.
+        """
+        return self._resolve_metric_config(
+            default_metrics=self.DEFAULT_METRICS,
+            default_metric_labels=self.DEFAULT_METRIC_LABELS,
+            default_metric_value_columns=self.DEFAULT_METRIC_VALUE_COLUMNS,
+            configured_metrics=self._configured_metrics,
+            configured_metric_labels=self._configured_metric_labels,
+            configured_metric_value_columns=self._configured_metric_value_columns,
+            override_metrics=metrics,
+            override_metric_labels=metric_labels,
+            override_metric_value_columns=metric_value_columns,
+        )
+
+    def _build_plot_df(
+        self,
+        *,
+        metrics: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+    ) -> pd.DataFrame:
+        """
+        Build the merged plotting dataframe and attach hover payload columns.
+        """
         z_scores_df = self.z_scores.reset_index()
         self._ensure_columns(
             z_scores_df,
@@ -981,15 +1194,27 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
             "single-CB z-score dataframe",
         )
 
-        raw_metric_columns = list(dict.fromkeys(self.metric_value_columns.values()))
+        raw_metric_columns = [
+            col for col in dict.fromkeys(metric_value_columns.values()) if col is not None
+        ]
         duel_summary_df = self.duel_summary.reset_index()
+        fallback_metric_columns = [
+            metric
+            for metric in metrics
+            if metric not in z_scores_df.columns and metric in duel_summary_df.columns
+        ]
+        required_duel_summary_columns = list(
+            dict.fromkeys(raw_metric_columns + fallback_metric_columns)
+        )
         self._ensure_columns(
             duel_summary_df,
-            ["player.id", "player.name"] + raw_metric_columns,
+            ["player.id", "player.name"] + required_duel_summary_columns,
             "single-CB raw metrics dataframe",
         )
 
-        raw_metrics_df = duel_summary_df[["player.id", "player.name"] + raw_metric_columns].copy()
+        raw_metrics_df = duel_summary_df[
+            ["player.id", "player.name"] + required_duel_summary_columns
+        ].copy()
         plot_df = z_scores_df.merge(
             raw_metrics_df,
             on=["player.id", "player.name"],
@@ -997,16 +1222,35 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
             validate="one_to_one",
         )
 
+        # Spread rank-based points for readability while keeping raw rank values in labels/tooltips via `metric_value_columns`.
+        rank_metric_col = "CB_rank_for_ground_duels_quality_z_score"
+        if rank_metric_col in plot_df.columns:
+            plot_df[rank_metric_col] = (
+                pd.to_numeric(plot_df[rank_metric_col], errors="coerce")
+                * self.RANK_Z_SCORE_SCALE
+            )
+
         return self._attach_hover_payload(
             plot_df,
-            metric_cols=self.metrics,
-            metric_labels=self.metric_labels,
-            metric_value_columns=self.metric_value_columns,
+            metric_cols=metrics,
+            metric_labels=dict(metric_labels),
+            metric_value_columns=dict(metric_value_columns),
             hover_payload_suffix="_hover_payload",
-            fill_missing_rank_z=False,
+            fill_missing_rank_z=True,
+            rank_z_scale=self.RANK_Z_SCORE_SCALE,
         )
 
-    def _create_plot(self, subtitle_style: str = "single") -> DistributionPlot:
+    def _create_plot(
+        self,
+        *,
+        metrics: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+        subtitle_style: str = "single",
+    ) -> DistributionPlot:
+        """
+        Instantiate and title the distribution chart with the resolved config.
+        """
         if subtitle_style == "comparison":
             subtitle = (
                 f"Based on {len(self.z_scores)} CB players with ≥ {self.min_num_duels_involved_in_threshold} duels "
@@ -1015,14 +1259,14 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
         else:
             subtitle = (
                 f"Based on {len(self.z_scores)} CB players with ≥ {self.min_num_duels_involved_in_threshold} duels "
-                f"and a playing time ≥ {self.min_minutes_played_threshold} minutes"
+                f"& playing time ≥ {self.min_minutes_played_threshold} minutes"
             )
 
         dist_plot = DistributionPlot(
-            columns=self.metrics,
+            columns=list(metrics),
             labels=["←   Worse", "Average", "Better   →"],
-            quality_metric_labels=self.metric_labels,
-            quality_metric_value_columns=self.metric_value_columns,
+            quality_metric_labels=dict(metric_labels),
+            quality_metric_value_columns=dict(metric_value_columns),
         )
         dist_plot.add_title(
             title="CB Ground Duel Quality Distribution",
@@ -1048,9 +1292,39 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
             raise ValueError(f"Resolved CB '{resolved['player.name']}' is not available in plotting dataframe.")
         return selected_rows.iloc[0]
 
-    def Plot_Single_CB(self, *, CB: Any = None, CB_ID: Any = None, include_league_average: bool = True, show: bool = True) -> DistributionPlot:
-        plot_df = self._build_plot_df()
-        dist_plot = self._create_plot(subtitle_style="single")
+    def Plot_Single_CB(
+        self,
+        *,
+        CB: Any = None,
+        CB_ID: Any = None,
+        include_league_average: bool = True,
+        metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+        show: bool = True,
+    ) -> DistributionPlot:
+        """
+        Plot one selected CB against the full single-CB Ground-Duels distribution.
+        """
+        resolved_metrics, resolved_labels, resolved_value_columns = (
+            self._resolve_current_metric_config(
+                metrics=metrics,
+                metric_labels=metric_labels,
+                metric_value_columns=metric_value_columns,
+            )
+        )
+
+        plot_df = self._build_plot_df(
+            metrics=resolved_metrics,
+            metric_labels=resolved_labels,
+            metric_value_columns=resolved_value_columns,
+        )
+        dist_plot = self._create_plot(
+            metrics=resolved_metrics,
+            metric_labels=resolved_labels,
+            metric_value_columns=resolved_value_columns,
+            subtitle_style="single",
+        )
 
         hover_payload_suffix = "_hover_payload"
         hover_string = "%{customdata[3]}"
@@ -1077,9 +1351,9 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
         if include_league_average:
             average_point = self._build_average_point(
                 plot_df=plot_df,
-                metric_cols=self.metrics,
-                metric_labels=self.metric_labels,
-                metric_value_columns=self.metric_value_columns,
+                metric_cols=resolved_metrics,
+                metric_labels=resolved_labels,
+                metric_value_columns=resolved_value_columns,
                 display_name_col="player.name",
                 display_name_value="CBs' League Average",
                 hover_payload_suffix=hover_payload_suffix,
@@ -1098,9 +1372,40 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
             dist_plot.fig.show()
         return dist_plot
 
-    def Plot_CBs_Comparison(self, *, CBs: Optional[Sequence[Any]] = None, CB_IDs: Optional[Sequence[Any]] = None, include_league_average: bool = True, multi_annotations: bool = True, show: bool = True) -> DistributionPlot:
-        plot_df = self._build_plot_df()
-        dist_plot = self._create_plot(subtitle_style="comparison")
+    def Plot_CBs_Comparison(
+        self,
+        *,
+        CBs: Optional[Sequence[Any]] = None,
+        CB_IDs: Optional[Sequence[Any]] = None,
+        include_league_average: bool = True,
+        multi_annotations: bool = True,
+        metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+        show: bool = True,
+    ) -> DistributionPlot:
+        """
+        Plot one or more selected CBs in comparison mode.
+        """
+        resolved_metrics, resolved_labels, resolved_value_columns = (
+            self._resolve_current_metric_config(
+                metrics=metrics,
+                metric_labels=metric_labels,
+                metric_value_columns=metric_value_columns,
+            )
+        )
+
+        plot_df = self._build_plot_df(
+            metrics=resolved_metrics,
+            metric_labels=resolved_labels,
+            metric_value_columns=resolved_value_columns,
+        )
+        dist_plot = self._create_plot(
+            metrics=resolved_metrics,
+            metric_labels=resolved_labels,
+            metric_value_columns=resolved_value_columns,
+            subtitle_style="comparison",
+        )
 
         hover_payload_suffix = "_hover_payload"
         hover_string = "%{customdata[3]}"
@@ -1154,9 +1459,9 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
         if include_league_average:
             average_point = self._build_average_point(
                 plot_df=plot_df,
-                metric_cols=self.metrics,
-                metric_labels=self.metric_labels,
-                metric_value_columns=self.metric_value_columns,
+                metric_cols=resolved_metrics,
+                metric_labels=resolved_labels,
+                metric_value_columns=resolved_value_columns,
                 display_name_col="player.name",
                 display_name_value="CBs' League Average",
                 hover_payload_suffix=hover_payload_suffix,
@@ -1189,47 +1494,280 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
 
 class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver):
     """
-    Reusable builder for CB-pair Ground-Duels distribution plots.
+    Build Ground-Duels distribution plots for CB-pair analyses.
+
+    By default, CB-pair plots are split into two side-by-side figures:
+    1. Fit/composition metrics (left)
+    2. Individual-quality metrics (right)
+
+    Set `split_view=False` in plotting methods to render the legacy single-figure
+    layout.
     """
 
-    def __init__(self, *, df_ground_duel_pairs: pd.DataFrame, plot_metric_cols: Sequence[str], pair_metric_labels: Dict[str, str], pair_metric_value_columns: Dict[str, Optional[str]], min_num_duels_involved_in_threshold: Any, min_minutes_played_threshold: Any) -> None:
+    DEFAULT_PAIR_METRIC_LABELS = {
+        "z_duels_per90": "Ground Duels per-90",
+        "z_card_discipline": "Card Discipline",
+        "z_discipline": "Discipline",
+        "z_interceptions_per90": "Interceptions per-90",
+        "z_duel_success_rate": "Duel Success Rate",
+        "z_possession_win_rate": "Possession Win Rate",
+        "floor_z": "CB-Pair Weak-Link (i.e. Floor) Protection",
+        "complement_z": "CB-Pair Complementarity (i.e. Deficit-Coverage Gain)",
+        "quality_z": "CB-Pair Weighted Avg. Quality",
+        "CB_pair_fit_z_score": "CB-Pair (Overall) Fit Score",
+        "CB_pair_fit_rank_z_score": "CB-Pair Fit Ranking (Within This Sample)",
+        "CB_pair_fit_rank": "CB-Pair Fit Ranking (Within This Sample)",
+    }
+
+
+    DEFAULT_PAIR_METRIC_VALUE_COLUMNS = {
+        "z_duels_per90": "duels_per90",
+        "z_card_discipline": "card_discipline",
+        "z_discipline": "discipline",
+        "z_interceptions_per90": "interceptions_per90",
+        "z_duel_success_rate": "duel_success_rate",
+        "z_possession_win_rate": "possession_win_rate",
+        "floor_z": "floor_raw",
+        "complement_z": "complement_raw",
+        "quality_z": "quality_raw",
+        "CB_pair_fit_z_score": None,
+        "CB_pair_fit_rank_z_score": "CB_pair_fit_rank",
+    }
+
+
+    DEFAULT_LEFT_METRICS = [
+        "floor_z",
+        "complement_z",
+        "quality_z",
+        "CB_pair_fit_z_score",
+        "CB_pair_fit_rank_z_score",
+    ]
+
+
+    DEFAULT_RIGHT_METRICS = [
+        "z_duels_per90",
+        "z_card_discipline",
+        "z_discipline",
+        "z_interceptions_per90",
+        "z_duel_success_rate",
+        "z_possession_win_rate",
+    ]
+
+    DEFAULT_METRICS = DEFAULT_RIGHT_METRICS + DEFAULT_LEFT_METRICS
+
+
+    RANK_Z_SCALE = 2.5
+
+
+    def __init__(
+        self,
+        *,
+        df_ground_duel_pairs: pd.DataFrame,
+        plot_metric_cols: Optional[Sequence[str]] = None,
+        pair_metric_labels: Optional[Mapping[str, str]] = None,
+        pair_metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+        left_metrics: Optional[Sequence[str]] = None,
+        right_metrics: Optional[Sequence[str]] = None,
+        min_num_duels_involved_in_threshold: Any,
+        min_minutes_played_threshold: Any,
+    ) -> None:
+        """
+        Args:
+            df_ground_duel_pairs: CB-pair dataframe used for plotting.
+            plot_metric_cols: Optional legacy single-view metric list.
+            pair_metric_labels: Optional constructor-level label map.
+            pair_metric_value_columns: Optional constructor-level raw-value map.
+            left_metrics: Optional constructor-level left split metrics.
+            right_metrics: Optional constructor-level right split metrics.
+            min_num_duels_involved_in_threshold: Threshold shown in subtitles.
+            min_minutes_played_threshold: Threshold shown in subtitles.
+        """
         self.df_ground_duel_pairs = df_ground_duel_pairs
-        self.plot_metric_cols = list(plot_metric_cols)
-        self.pair_metric_labels = dict(pair_metric_labels)
-        self.pair_metric_value_columns = dict(pair_metric_value_columns)
+        self._configured_plot_metric_cols = (
+            list(plot_metric_cols) if plot_metric_cols is not None else None
+        )
+        self._configured_pair_metric_labels = (
+            dict(pair_metric_labels) if pair_metric_labels is not None else None
+        )
+        self._configured_pair_metric_value_columns = (
+            dict(pair_metric_value_columns)
+            if pair_metric_value_columns is not None
+            else None
+        )
+        self._configured_left_metrics = (
+            list(left_metrics) if left_metrics is not None else None
+        )
+        self._configured_right_metrics = (
+            list(right_metrics) if right_metrics is not None else None
+        )
         self.min_num_duels_involved_in_threshold = min_num_duels_involved_in_threshold
         self.min_minutes_played_threshold = min_minutes_played_threshold
 
-    def _prepare_plot_df(self) -> pd.DataFrame:
+    def _resolve_pair_metric_configs(
+        self,
+        *,
+        split_view: bool,
+        left_metrics: Optional[Sequence[str]] = None,
+        right_metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+    ) -> Dict[str, Tuple[List[str], Dict[str, str], Dict[str, Optional[str]]]]:
+        """
+        Resolve split or single metric configs with method > constructor > default precedence.
+        """
+        constructor_labels = self._configured_pair_metric_labels
+        constructor_value_columns = self._configured_pair_metric_value_columns
+
+        if split_view:
+            configured_left = self._configured_left_metrics
+            configured_right = self._configured_right_metrics
+
+            if configured_left is None and configured_right is None and self._configured_plot_metric_cols is not None:
+                ordered = list(self._configured_plot_metric_cols)
+                derived_left = [m for m in ordered if m in self.DEFAULT_LEFT_METRICS]
+                derived_right = [m for m in ordered if m not in derived_left]
+                configured_left = derived_left or list(self.DEFAULT_LEFT_METRICS)
+                configured_right = derived_right or list(self.DEFAULT_RIGHT_METRICS)
+
+            left_cfg = self._resolve_metric_config(
+                default_metrics=self.DEFAULT_LEFT_METRICS,
+                default_metric_labels=self.DEFAULT_PAIR_METRIC_LABELS,
+                default_metric_value_columns=self.DEFAULT_PAIR_METRIC_VALUE_COLUMNS,
+                configured_metrics=configured_left,
+                configured_metric_labels=constructor_labels,
+                configured_metric_value_columns=constructor_value_columns,
+                override_metrics=left_metrics,
+                override_metric_labels=metric_labels,
+                override_metric_value_columns=metric_value_columns,
+            )
+            right_cfg = self._resolve_metric_config(
+                default_metrics=self.DEFAULT_RIGHT_METRICS,
+                default_metric_labels=self.DEFAULT_PAIR_METRIC_LABELS,
+                default_metric_value_columns=self.DEFAULT_PAIR_METRIC_VALUE_COLUMNS,
+                configured_metrics=configured_right,
+                configured_metric_labels=constructor_labels,
+                configured_metric_value_columns=constructor_value_columns,
+                override_metrics=right_metrics,
+                override_metric_labels=metric_labels,
+                override_metric_value_columns=metric_value_columns,
+            )
+
+            combined_metrics: List[str] = []
+            for metric in left_cfg[0] + right_cfg[0]:
+                if metric not in combined_metrics:
+                    combined_metrics.append(metric)
+
+            combined_labels = dict(left_cfg[1])
+            combined_labels.update(right_cfg[1])
+            combined_value_columns = dict(left_cfg[2])
+            combined_value_columns.update(right_cfg[2])
+            combined_cfg = (combined_metrics, combined_labels, combined_value_columns)
+
+            return {
+                "left": left_cfg,
+                "right": right_cfg,
+                "combined": combined_cfg,
+            }
+
+        override_metrics: Optional[List[str]] = None
+        if left_metrics is not None or right_metrics is not None:
+            override_metrics = []
+            for metric in list(left_metrics or []) + list(right_metrics or []):
+                metric_str = str(metric)
+                if metric_str not in override_metrics:
+                    override_metrics.append(metric_str)
+
+        configured_single_metrics = self._configured_plot_metric_cols
+        if configured_single_metrics is None and (
+            self._configured_left_metrics is not None or self._configured_right_metrics is not None
+        ):
+            configured_single_metrics = []
+            for metric in list(self._configured_left_metrics or []) + list(self._configured_right_metrics or []):
+                metric_str = str(metric)
+                if metric_str not in configured_single_metrics:
+                    configured_single_metrics.append(metric_str)
+
+        single_cfg = self._resolve_metric_config(
+            default_metrics=self.DEFAULT_METRICS,
+            default_metric_labels=self.DEFAULT_PAIR_METRIC_LABELS,
+            default_metric_value_columns=self.DEFAULT_PAIR_METRIC_VALUE_COLUMNS,
+            configured_metrics=configured_single_metrics,
+            configured_metric_labels=constructor_labels,
+            configured_metric_value_columns=constructor_value_columns,
+            override_metrics=override_metrics,
+            override_metric_labels=metric_labels,
+            override_metric_value_columns=metric_value_columns,
+        )
+        return {"single": single_cfg, "combined": single_cfg}
+
+    def _prepare_plot_df(
+        self,
+        *,
+        metric_cols: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+    ) -> pd.DataFrame:
+        """
+        Prepare the CB-pair dataframe and inject hover payload columns.
+        """
         plot_df = self.df_ground_duel_pairs.copy()
         self._ensure_columns(
             plot_df,
             ["pair_name", "CB_pair_fit_z_score"],
             "CB-pair plotting dataframe",
         )
+
+        # Always scale rank-derived z-scores with the CB-pair-specific spread factor
+        # so ranking rows are readable even when the source dataframe already
+        # contains a precomputed rank z-score column.
+        for metric in metric_cols:
+            raw_metric = metric_value_columns.get(metric, metric.replace("z_", "", 1))
+            if (
+                raw_metric is not None
+                and self._is_rank_metric(metric, raw_metric)
+                and raw_metric in plot_df.columns
+            ):
+                plot_df[metric] = self._z_standardize(
+                    plot_df[raw_metric],
+                    invert=True,
+                    scale=self.RANK_Z_SCALE,
+                )
+
         return self._attach_hover_payload(
             plot_df,
-            metric_cols=self.plot_metric_cols,
-            metric_labels=self.pair_metric_labels,
-            metric_value_columns=self.pair_metric_value_columns,
+            metric_cols=metric_cols,
+            metric_labels=dict(metric_labels),
+            metric_value_columns=dict(metric_value_columns),
             hover_payload_suffix="_hover_payload",
             fill_missing_rank_z=True,
-            rank_z_scale=2.0,
+            rank_z_scale=self.RANK_Z_SCALE,
         )
 
-    def _create_plot(self) -> DistributionPlot:
+    def _create_plot(
+        self,
+        *,
+        metric_cols: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+        section_title: Optional[str] = None,
+    ) -> DistributionPlot:
+        """
+        Instantiate and title one CB-pair distribution figure.
+        """
         dist_plot = DistributionPlot(
-            columns=self.plot_metric_cols,
+            columns=list(metric_cols),
             labels=["←   Worse", "Average", "Better   →"],
-            quality_metric_labels=self.pair_metric_labels,
-            quality_metric_value_columns=self.pair_metric_value_columns,
+            quality_metric_labels=dict(metric_labels),
+            quality_metric_value_columns=dict(metric_value_columns),
         )
+        title = "CB-Pair Ground Duels Quality Fit Distribution"
+        if section_title:
+            title = f"{title} ({section_title})"
         dist_plot.add_title(
-            title="CB-Pair Ground Duels Quality Fit Distribution",
+            title=title,
             subtitle=(
-                f"All {len(self.df_ground_duel_pairs)} unordered CB pairs, with "
-                f"≥ {self.min_num_duels_involved_in_threshold} duels & playing time "
-                f"≥ {self.min_minutes_played_threshold} minutes (each individual CB)   |   "
+                f"All {len(self.df_ground_duel_pairs)} unordered CB pairs, with ≥ {self.min_num_duels_involved_in_threshold} duels & playing time ≥ {self.min_minutes_played_threshold} minutes (each individual CB)"
+                "<br>"
                 "All metrics are CB-Pair-level (i.e. the weighted average of both players for that metric)"
             ),
         )
@@ -1341,10 +1879,26 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
                 add_annotations=add_single_annotations,
             )
 
-    def Plot_CB_Pair(self, *, CB_Pair: Any = None, CB_1: Any = None, CB_2: Any = None, CB_1_ID: Any = None, CB_2_ID: Any = None, include_best: bool = True, include_worst: bool = False, include_average: bool = False, multi_annotations: bool = False, show: bool = True) -> DistributionPlot:
-        plot_df = self._prepare_plot_df()
-        dist_plot = self._create_plot()
-
+    def _build_pair_plot(
+        self,
+        *,
+        plot_df: pd.DataFrame,
+        metric_cols: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+        highlighted_rows: Sequence[Tuple[pd.Series, str, bool]],
+        multi_annotations: bool,
+        section_title: Optional[str] = None,
+    ) -> DistributionPlot:
+        """
+        Build one CB-pair figure from pre-resolved highlighted rows.
+        """
+        dist_plot = self._create_plot(
+            metric_cols=metric_cols,
+            metric_labels=metric_labels,
+            metric_value_columns=metric_value_columns,
+            section_title=section_title,
+        )
         hover_payload_suffix = "_hover_payload"
         hover_string = "%{customdata[3]}"
 
@@ -1357,6 +1911,39 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
             hover_string=hover_string,
         )
 
+        for row, display_name, add_single_annotations in highlighted_rows:
+            self._add_row_point(
+                dist_plot,
+                row=row,
+                display_name=display_name,
+                hover_payload_suffix=hover_payload_suffix,
+                hover_string=hover_string,
+                multi_annotations=multi_annotations,
+                add_single_annotations=add_single_annotations,
+            )
+
+        return dist_plot
+
+    def _collect_single_pair_highlights(
+        self,
+        *,
+        plot_df: pd.DataFrame,
+        metric_cols: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+        CB_Pair: Any = None,
+        CB_1: Any = None,
+        CB_2: Any = None,
+        CB_1_ID: Any = None,
+        CB_2_ID: Any = None,
+        include_best: bool = True,
+        include_worst: bool = False,
+        include_average: bool = False,
+    ) -> List[Tuple[pd.Series, str, bool]]:
+        """
+        Resolve highlighted rows for a single CB-pair plot scenario.
+        """
+        highlighted_rows: List[Tuple[pd.Series, str, bool]] = []
         used_keys = set()
 
         selected_pair = self._resolve_pair_row(
@@ -1368,89 +1955,54 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
             CB_2_ID=CB_2_ID,
         )
         if selected_pair is not None:
-            key = self._pair_key(selected_pair)
-            used_keys.add(key)
-            self._add_row_point(
-                dist_plot,
-                row=selected_pair,
-                display_name=selected_pair["pair_name"],
-                hover_payload_suffix=hover_payload_suffix,
-                hover_string=hover_string,
-                multi_annotations=multi_annotations,
-                add_single_annotations=True,
-            )
+            selected_key = self._pair_key(selected_pair)
+            used_keys.add(selected_key)
+            highlighted_rows.append((selected_pair, selected_pair["pair_name"], True))
 
         if include_best:
             best_pair = plot_df.sort_values("CB_pair_fit_z_score", ascending=False).iloc[0]
-            key = self._pair_key(best_pair)
-            if key not in used_keys:
-                used_keys.add(key)
-                self._add_row_point(
-                    dist_plot,
-                    row=best_pair,
-                    display_name=best_pair["pair_name"],
-                    hover_payload_suffix=hover_payload_suffix,
-                    hover_string=hover_string,
-                    multi_annotations=multi_annotations,
-                    add_single_annotations=True,
-                )
+            best_key = self._pair_key(best_pair)
+            if best_key not in used_keys:
+                used_keys.add(best_key)
+                highlighted_rows.append((best_pair, best_pair["pair_name"], True))
 
         if include_worst:
             worst_pair = plot_df.sort_values("CB_pair_fit_z_score", ascending=True).iloc[0]
-            key = self._pair_key(worst_pair)
-            if key not in used_keys:
-                used_keys.add(key)
-                self._add_row_point(
-                    dist_plot,
-                    row=worst_pair,
-                    display_name=worst_pair["pair_name"],
-                    hover_payload_suffix=hover_payload_suffix,
-                    hover_string=hover_string,
-                    multi_annotations=multi_annotations,
-                    add_single_annotations=True,
-                )
+            worst_key = self._pair_key(worst_pair)
+            if worst_key not in used_keys:
+                used_keys.add(worst_key)
+                highlighted_rows.append((worst_pair, worst_pair["pair_name"], True))
 
         if include_average:
             average_point = self._build_average_point(
                 plot_df=plot_df,
-                metric_cols=self.plot_metric_cols,
-                metric_labels=self.pair_metric_labels,
-                metric_value_columns=self.pair_metric_value_columns,
+                metric_cols=metric_cols,
+                metric_labels=dict(metric_labels),
+                metric_value_columns=dict(metric_value_columns),
                 display_name_col="pair_name",
                 display_name_value="CB-Pairs' League Average",
-                hover_payload_suffix=hover_payload_suffix,
+                hover_payload_suffix="_hover_payload",
             )
             average_point["pair_key"] = "__pair_average__"
-            self._add_row_point(
-                dist_plot,
-                row=average_point,
-                display_name="CB-Pairs' League Average",
-                hover_payload_suffix=hover_payload_suffix,
-                hover_string=hover_string,
-                multi_annotations=multi_annotations,
-                add_single_annotations=False,
-            )
+            highlighted_rows.append((average_point, "CB-Pairs' League Average", False))
 
-        if show:
-            dist_plot.fig.show()
-        return dist_plot
+        return highlighted_rows
 
-    def Plot_CB_Pairs_Comparison(self, *, CB_Pairs: Optional[Sequence[Union[str, Sequence[Any], Dict[str, Any]]]] = None, include_best: bool = False, include_worst: bool = False, include_average: bool = False, multi_annotations: bool = True, show: bool = True) -> DistributionPlot:
-        plot_df = self._prepare_plot_df()
-        dist_plot = self._create_plot()
-
-        hover_payload_suffix = "_hover_payload"
-        hover_string = "%{customdata[3]}"
-
-        dist_plot.add_group_data(
-            df_plot=plot_df,
-            plots="",
-            names=plot_df["pair_name"],
-            legend="All pairs",
-            hover=hover_payload_suffix,
-            hover_string=hover_string,
-        )
-
+    def _collect_comparison_pair_highlights(
+        self,
+        *,
+        plot_df: pd.DataFrame,
+        metric_cols: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+        CB_Pairs: Optional[Sequence[Union[str, Sequence[Any], Dict[str, Any]]]] = None,
+        include_best: bool = False,
+        include_worst: bool = False,
+        include_average: bool = False,
+    ) -> List[Tuple[pd.Series, str, bool]]:
+        """
+        Resolve highlighted rows for CB-pair comparison plots.
+        """
         specs: List[Dict[str, Any]] = []
         for item in (CB_Pairs or []):
             if isinstance(item, str):
@@ -1469,8 +2021,8 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
                 "Please provide CB_Pairs and/or enable at least one of include_best/include_worst/include_average."
             )
 
+        highlighted_rows: List[Tuple[pd.Series, str, bool]] = []
         used_keys = set()
-
         for spec in specs:
             selected_pair = self._resolve_pair_row(
                 plot_df,
@@ -1487,85 +2039,312 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
             if key in used_keys:
                 continue
             used_keys.add(key)
-
-            self._add_row_point(
-                dist_plot,
-                row=selected_pair,
-                display_name=selected_pair["pair_name"],
-                hover_payload_suffix=hover_payload_suffix,
-                hover_string=hover_string,
-                multi_annotations=multi_annotations,
-                add_single_annotations=True,
-            )
+            highlighted_rows.append((selected_pair, selected_pair["pair_name"], True))
 
         if include_best:
             best_pair = plot_df.sort_values("CB_pair_fit_z_score", ascending=False).iloc[0]
-            key = self._pair_key(best_pair)
-            if key not in used_keys:
-                used_keys.add(key)
-                self._add_row_point(
-                    dist_plot,
-                    row=best_pair,
-                    display_name=best_pair["pair_name"],
-                    hover_payload_suffix=hover_payload_suffix,
-                    hover_string=hover_string,
-                    multi_annotations=multi_annotations,
-                    add_single_annotations=True,
-                )
+            best_key = self._pair_key(best_pair)
+            if best_key not in used_keys:
+                used_keys.add(best_key)
+                highlighted_rows.append((best_pair, best_pair["pair_name"], True))
 
         if include_worst:
             worst_pair = plot_df.sort_values("CB_pair_fit_z_score", ascending=True).iloc[0]
-            key = self._pair_key(worst_pair)
-            if key not in used_keys:
-                used_keys.add(key)
-                self._add_row_point(
-                    dist_plot,
-                    row=worst_pair,
-                    display_name=worst_pair["pair_name"],
-                    hover_payload_suffix=hover_payload_suffix,
-                    hover_string=hover_string,
-                    multi_annotations=multi_annotations,
-                    add_single_annotations=True,
-                )
+            worst_key = self._pair_key(worst_pair)
+            if worst_key not in used_keys:
+                used_keys.add(worst_key)
+                highlighted_rows.append((worst_pair, worst_pair["pair_name"], True))
 
         if include_average:
             average_point = self._build_average_point(
                 plot_df=plot_df,
-                metric_cols=self.plot_metric_cols,
-                metric_labels=self.pair_metric_labels,
-                metric_value_columns=self.pair_metric_value_columns,
+                metric_cols=metric_cols,
+                metric_labels=dict(metric_labels),
+                metric_value_columns=dict(metric_value_columns),
                 display_name_col="pair_name",
                 display_name_value="CB-Pairs' League Average",
-                hover_payload_suffix=hover_payload_suffix,
+                hover_payload_suffix="_hover_payload",
             )
             average_point["pair_key"] = "__pair_average__"
-            self._add_row_point(
-                dist_plot,
-                row=average_point,
-                display_name="CB-Pairs' League Average",
-                hover_payload_suffix=hover_payload_suffix,
-                hover_string=hover_string,
+            highlighted_rows.append((average_point, "CB-Pairs' League Average", False))
+
+        return highlighted_rows
+
+    def Plot_CB_Pair(
+        self,
+        *,
+        CB_Pair: Any = None,
+        CB_1: Any = None,
+        CB_2: Any = None,
+        CB_1_ID: Any = None,
+        CB_2_ID: Any = None,
+        include_best: bool = True,
+        include_worst: bool = False,
+        include_average: bool = False,
+        multi_annotations: bool = False,
+        left_metrics: Optional[Sequence[str]] = None,
+        right_metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+        split_view: bool = True,
+        render_side_by_side: bool = True,
+        show: bool = True,
+    ) -> Union[DistributionPlot, Tuple[DistributionPlot, DistributionPlot]]:
+        """
+        Plot one selected CB-pair (optional) plus optional best/worst/average references.
+        """
+        cfg = self._resolve_pair_metric_configs(
+            split_view=split_view,
+            left_metrics=left_metrics,
+            right_metrics=right_metrics,
+            metric_labels=metric_labels,
+            metric_value_columns=metric_value_columns,
+        )
+        combined_metrics, combined_labels, combined_values = cfg["combined"]
+        plot_df = self._prepare_plot_df(
+            metric_cols=combined_metrics,
+            metric_labels=combined_labels,
+            metric_value_columns=combined_values,
+        )
+
+        highlighted_rows = self._collect_single_pair_highlights(
+            plot_df=plot_df,
+            metric_cols=combined_metrics,
+            metric_labels=combined_labels,
+            metric_value_columns=combined_values,
+            CB_Pair=CB_Pair,
+            CB_1=CB_1,
+            CB_2=CB_2,
+            CB_1_ID=CB_1_ID,
+            CB_2_ID=CB_2_ID,
+            include_best=include_best,
+            include_worst=include_worst,
+            include_average=include_average,
+        )
+
+        if split_view:
+            left_metrics_cfg, left_labels_cfg, left_values_cfg = cfg["left"]
+            right_metrics_cfg, right_labels_cfg, right_values_cfg = cfg["right"]
+            left_plot = self._build_pair_plot(
+                plot_df=plot_df,
+                metric_cols=left_metrics_cfg,
+                metric_labels=left_labels_cfg,
+                metric_value_columns=left_values_cfg,
+                highlighted_rows=highlighted_rows,
                 multi_annotations=multi_annotations,
-                add_single_annotations=False,
+                section_title="Fit / Composition Metrics",
+            )
+            right_plot = self._build_pair_plot(
+                plot_df=plot_df,
+                metric_cols=right_metrics_cfg,
+                metric_labels=right_labels_cfg,
+                metric_value_columns=right_values_cfg,
+                highlighted_rows=highlighted_rows,
+                multi_annotations=multi_annotations,
+                section_title="Individual Quality Metrics",
             )
 
+            if show:
+                rendered_side_by_side = False
+                if render_side_by_side:
+                    rendered_side_by_side = self._show_figures_side_by_side(
+                        [left_plot.fig, right_plot.fig]
+                    )
+                if not rendered_side_by_side:
+                    left_plot.fig.show()
+                    right_plot.fig.show()
+            return left_plot, right_plot
+
+        single_metrics, single_labels, single_values = cfg["single"]
+        single_plot = self._build_pair_plot(
+            plot_df=plot_df,
+            metric_cols=single_metrics,
+            metric_labels=single_labels,
+            metric_value_columns=single_values,
+            highlighted_rows=highlighted_rows,
+            multi_annotations=multi_annotations,
+            section_title=None,
+        )
         if show:
-            dist_plot.fig.show()
-        return dist_plot
+            single_plot.fig.show()
+        return single_plot
+
+    def Plot_CB_Pairs_Comparison(
+        self,
+        *,
+        CB_Pairs: Optional[Sequence[Union[str, Sequence[Any], Dict[str, Any]]]] = None,
+        include_best: bool = False,
+        include_worst: bool = False,
+        include_average: bool = False,
+        multi_annotations: bool = True,
+        left_metrics: Optional[Sequence[str]] = None,
+        right_metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+        split_view: bool = True,
+        render_side_by_side: bool = True,
+        show: bool = True,
+    ) -> Union[DistributionPlot, Tuple[DistributionPlot, DistributionPlot]]:
+        """
+        Compare multiple user-selected CB-pairs plus optional best/worst/average overlays.
+        """
+        cfg = self._resolve_pair_metric_configs(
+            split_view=split_view,
+            left_metrics=left_metrics,
+            right_metrics=right_metrics,
+            metric_labels=metric_labels,
+            metric_value_columns=metric_value_columns,
+        )
+        combined_metrics, combined_labels, combined_values = cfg["combined"]
+        plot_df = self._prepare_plot_df(
+            metric_cols=combined_metrics,
+            metric_labels=combined_labels,
+            metric_value_columns=combined_values,
+        )
+
+        highlighted_rows = self._collect_comparison_pair_highlights(
+            plot_df=plot_df,
+            metric_cols=combined_metrics,
+            metric_labels=combined_labels,
+            metric_value_columns=combined_values,
+            CB_Pairs=CB_Pairs,
+            include_best=include_best,
+            include_worst=include_worst,
+            include_average=include_average,
+        )
+
+        if split_view:
+            left_metrics_cfg, left_labels_cfg, left_values_cfg = cfg["left"]
+            right_metrics_cfg, right_labels_cfg, right_values_cfg = cfg["right"]
+            left_plot = self._build_pair_plot(
+                plot_df=plot_df,
+                metric_cols=left_metrics_cfg,
+                metric_labels=left_labels_cfg,
+                metric_value_columns=left_values_cfg,
+                highlighted_rows=highlighted_rows,
+                multi_annotations=multi_annotations,
+                section_title="Fit / Composition Metrics",
+            )
+            right_plot = self._build_pair_plot(
+                plot_df=plot_df,
+                metric_cols=right_metrics_cfg,
+                metric_labels=right_labels_cfg,
+                metric_value_columns=right_values_cfg,
+                highlighted_rows=highlighted_rows,
+                multi_annotations=multi_annotations,
+                section_title="Individual Quality Metrics",
+            )
+
+            if show:
+                rendered_side_by_side = False
+                if render_side_by_side:
+                    rendered_side_by_side = self._show_figures_side_by_side(
+                        [left_plot.fig, right_plot.fig]
+                    )
+                if not rendered_side_by_side:
+                    left_plot.fig.show()
+                    right_plot.fig.show()
+            return left_plot, right_plot
+
+        single_metrics, single_labels, single_values = cfg["single"]
+        single_plot = self._build_pair_plot(
+            plot_df=plot_df,
+            metric_cols=single_metrics,
+            metric_labels=single_labels,
+            metric_value_columns=single_values,
+            highlighted_rows=highlighted_rows,
+            multi_annotations=multi_annotations,
+            section_title=None,
+        )
+        if show:
+            single_plot.fig.show()
+        return single_plot
 
 
 class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver):
     """
-    Reusable builder for anchor-to-partner (directional) companion-fit Ground-Duels distribution plots.
+    Build directional anchor-to-companion Ground-Duels distribution plots.
+
+    The class includes default companion-fit metrics/labels/raw mappings but still
+    supports constructor-level and per-call metric overrides.
     """
 
-    def __init__(self, *, df_ground_duel_companion_fit: pd.DataFrame, companion_plot_metric_cols: Sequence[str], companion_metric_labels: Dict[str, str], companion_metric_value_columns: Dict[str, Optional[str]]) -> None:
+    DEFAULT_METRICS = [
+        "coverage_gain_z_within_anchor",
+        "CB_pair_fit_z_score",
+        "companion_fit_score_z_within_anchor",
+        "companion_rank_for_anchor_z_score",
+    ]
+    DEFAULT_METRIC_LABELS = {
+        "coverage_gain_z_within_anchor": "Deficit-Coverage Gain (Within Anchor CB)",
+        "CB_pair_fit_z_score": "CB-Pair (Overall) Fit Score",
+        "companion_fit_score_z_within_anchor": "CB-Companion Fit Score (Within Anchor CB)",
+        "companion_rank_for_anchor_z_score": "CB-Companion Fit Ranking (Within Anchor CB's Sample)",
+        "companion_rank_for_anchor": "CB-Companion Fit Ranking (Within Anchor CB's Sample)",
+    }
+    DEFAULT_METRIC_VALUE_COLUMNS = {
+        "coverage_gain_z_within_anchor": "coverage_gain_raw",
+        "CB_pair_fit_z_score": None,
+        "companion_fit_score_z_within_anchor": "companion_fit_score",
+        "companion_rank_for_anchor_z_score": "companion_rank_for_anchor",
+    }
+
+    def __init__(
+        self,
+        *,
+        df_ground_duel_companion_fit: pd.DataFrame,
+        companion_plot_metric_cols: Optional[Sequence[str]] = None,
+        companion_metric_labels: Optional[Mapping[str, str]] = None,
+        companion_metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+    ) -> None:
+        """
+        Args:
+            df_ground_duel_companion_fit: Directional anchor-to-partner fit dataframe.
+            companion_plot_metric_cols: Optional constructor-level metric list.
+            companion_metric_labels: Optional constructor-level label map.
+            companion_metric_value_columns: Optional constructor-level raw-value map.
+        """
         self.df_ground_duel_companion_fit = df_ground_duel_companion_fit
-        self.companion_plot_metric_cols = list(companion_plot_metric_cols)
-        self.companion_metric_labels = dict(companion_metric_labels)
-        self.companion_metric_value_columns = dict(companion_metric_value_columns)
+        self._configured_companion_plot_metric_cols = (
+            list(companion_plot_metric_cols)
+            if companion_plot_metric_cols is not None
+            else None
+        )
+        self._configured_companion_metric_labels = (
+            dict(companion_metric_labels)
+            if companion_metric_labels is not None
+            else None
+        )
+        self._configured_companion_metric_value_columns = (
+            dict(companion_metric_value_columns)
+            if companion_metric_value_columns is not None
+            else None
+        )
         self._anchor_player_id: Optional[Any] = None
         self._anchor_player_name: Optional[str] = None
+
+    def _resolve_current_metric_config(
+        self,
+        *,
+        metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+    ) -> Tuple[List[str], Dict[str, str], Dict[str, Optional[str]]]:
+        """
+        Resolve call-ready metric config with precedence:
+        method override > constructor config > class defaults.
+        """
+        return self._resolve_metric_config(
+            default_metrics=self.DEFAULT_METRICS,
+            default_metric_labels=self.DEFAULT_METRIC_LABELS,
+            default_metric_value_columns=self.DEFAULT_METRIC_VALUE_COLUMNS,
+            configured_metrics=self._configured_companion_plot_metric_cols,
+            configured_metric_labels=self._configured_companion_metric_labels,
+            configured_metric_value_columns=self._configured_companion_metric_value_columns,
+            override_metrics=metrics,
+            override_metric_labels=metric_labels,
+            override_metric_value_columns=metric_value_columns,
+        )
 
     def _anchor_candidates(self) -> pd.DataFrame:
         self._ensure_columns(
@@ -1613,12 +2392,27 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         )
 
     def Initialize_Desired_Anchor_CB(self, *, Anchor_CB: Any = None, Anchor_CB_ID: Any = None) -> pd.Series:
+        """
+        Resolve and cache the anchor CB used by subsequent companion plots.
+        """
         resolved_anchor = self._resolve_anchor(Anchor_CB=Anchor_CB, Anchor_CB_ID=Anchor_CB_ID)
         self._anchor_player_id = resolved_anchor.get("anchor_player_id", None)
         self._anchor_player_name = str(resolved_anchor["anchor_player_name"])
         return resolved_anchor
 
-    def _build_anchor_plot_df(self, *, anchor_name: str, anchor_id: Any = None, top_n: Optional[int] = None) -> pd.DataFrame:
+    def _build_anchor_plot_df(
+        self,
+        *,
+        anchor_name: str,
+        anchor_id: Any = None,
+        top_n: Optional[int] = None,
+        metric_cols: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+    ) -> pd.DataFrame:
+        """
+        Build anchor-filtered companion-fit dataframe and attach hover payloads.
+        """
         plot_df = self.df_ground_duel_companion_fit.copy()
         self._ensure_columns(
             plot_df,
@@ -1672,9 +2466,9 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
 
         return self._attach_hover_payload(
             filtered,
-            metric_cols=self.companion_plot_metric_cols,
-            metric_labels=self.companion_metric_labels,
-            metric_value_columns=self.companion_metric_value_columns,
+            metric_cols=metric_cols,
+            metric_labels=dict(metric_labels),
+            metric_value_columns=dict(metric_value_columns),
             hover_payload_suffix="_hover_payload",
             fill_missing_rank_z=True,
             rank_z_scale=2.0,
@@ -1756,24 +2550,66 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
                 add_annotations=add_single_annotations,
             )
 
-    def _create_plot(self, *, anchor_name: str, num_candidates: int) -> DistributionPlot:
+    def _create_plot(
+        self,
+        *,
+        anchor_name: str,
+        num_candidates: int,
+        metric_cols: Sequence[str],
+        metric_labels: Mapping[str, str],
+        metric_value_columns: Mapping[str, Optional[str]],
+    ) -> DistributionPlot:
+        """
+        Instantiate and title one anchor-companion distribution figure.
+        """
         dist_plot = DistributionPlot(
-            columns=self.companion_plot_metric_cols,
+            columns=list(metric_cols),
             labels=["←   Worse", "Average", "Better   →"],
-            quality_metric_labels=self.companion_metric_labels,
-            quality_metric_value_columns=self.companion_metric_value_columns,
+            quality_metric_labels=dict(metric_labels),
+            quality_metric_value_columns=dict(metric_value_columns),
         )
         dist_plot.add_title(
             title=f"CB-Companion Ground Duels Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
             subtitle=(
-                f"All {num_candidates} potential companions for {anchor_name} (directional A -> B)   |   "
-                "Metrics are at the CB-Companion-level (i.e. within the Anchor CB's sample), showing the expected contribution of the companion to "
-                "the CB-Pair's overall fit with the specified Anchor CB."
+                f"All {num_candidates} potential companions for {anchor_name} (directional A → B) \n"
+                "Metrics are at the CB-Companion-level (i.e. within the Anchor CB's sample), \nshowing the expected contribution of the companion to the CB-Pair's overall fit with the specified Anchor CB."
             ),
         )
         return dist_plot
 
-    def Plot_Companion_of_Anchor_CB( self, *, Anchor_CB: Any = None, Anchor_CB_ID: Any = None, Companion_CB: Any = None, Companion_CB_ID: Any = None, include_best: bool = True, include_worst: bool = False, include_anchor_CB_pool_average: bool = False, top_n: Optional[int] = None, multi_annotations: bool = False, show: bool = True) -> DistributionPlot:
+    def Plot_Companion_of_Anchor_CB(
+        self,
+        *,
+        Anchor_CB: Any = None,
+        Anchor_CB_ID: Any = None,
+        Companion_CB: Any = None,
+        Companion_CB_ID: Any = None,
+        include_best: bool = True,
+        include_worst: bool = False,
+        include_anchor_CB_pool_average: bool = False,
+        top_n: Optional[int] = None,
+        multi_annotations: bool = False,
+        metrics: Optional[Sequence[str]] = None,
+        metric_labels: Optional[Mapping[str, str]] = None,
+        metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
+        show: bool = True,
+    ) -> DistributionPlot:
+        """
+        Plot potential companions for one anchor CB, with optional highlighted rows.
+
+        The highlighted rows can include:
+        - an explicitly selected companion
+        - best/worst companion for the anchor
+        - the anchor's companion-pool average
+        """
+        resolved_metrics, resolved_labels, resolved_value_columns = (
+            self._resolve_current_metric_config(
+                metrics=metrics,
+                metric_labels=metric_labels,
+                metric_value_columns=metric_value_columns,
+            )
+        )
+
         resolved_anchor = self.Initialize_Desired_Anchor_CB(
             Anchor_CB=Anchor_CB,
             Anchor_CB_ID=Anchor_CB_ID,
@@ -1785,8 +2621,17 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
             anchor_name=anchor_name,
             anchor_id=anchor_id,
             top_n=top_n,
+            metric_cols=resolved_metrics,
+            metric_labels=resolved_labels,
+            metric_value_columns=resolved_value_columns,
         )
-        dist_plot = self._create_plot(anchor_name=anchor_name, num_candidates=len(plot_df))
+        dist_plot = self._create_plot(
+            anchor_name=anchor_name,
+            num_candidates=len(plot_df),
+            metric_cols=resolved_metrics,
+            metric_labels=resolved_labels,
+            metric_value_columns=resolved_value_columns,
+        )
 
         hover_payload_suffix = "_hover_payload"
         hover_string = "%{customdata[3]}"
@@ -1856,9 +2701,9 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         if include_anchor_CB_pool_average:
             average_point = self._build_average_point(
                 plot_df=plot_df,
-                metric_cols=self.companion_plot_metric_cols,
-                metric_labels=self.companion_metric_labels,
-                metric_value_columns=self.companion_metric_value_columns,
+                metric_cols=resolved_metrics,
+                metric_labels=resolved_labels,
+                metric_value_columns=resolved_value_columns,
                 display_name_col="partner_player_name",
                 display_name_value="Companion Pool Average",
                 hover_payload_suffix=hover_payload_suffix,
