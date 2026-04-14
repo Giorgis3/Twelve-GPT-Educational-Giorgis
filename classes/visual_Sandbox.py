@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import re
 import unicodedata
+import itertools
 
 
 from utils.sentences import format_metric
@@ -91,6 +92,8 @@ class Visual:
     sapphire = hex_to_rgb("#0f52ba")
     table_green = hex_to_rgb("#009940")
     table_red = hex_to_rgb("#FF4B00")
+    aqua = hex_to_rgb("#00FFD5")
+    lime = hex_to_rgb("#C8FF00")
 
     def __init__(self, pdf=False, plot_type="scout"):
         """
@@ -249,13 +252,51 @@ class DistributionPlot(Visual):
         self.quality_metric_labels = self._normalize_metric_labels(quality_metric_labels)
         self.quality_metric_value_columns = self._normalize_metric_labels(quality_metric_value_columns, value_name = "quality_metric_value_columns")
         
-        # Cycled styles ensure multiple highlighted entities remain visually distinct.
-        self.marker_color = (
-            c for c in [Visual.bright_orange, Visual.magenta, Visual.bright_yellow, Visual.bright_blue]
-        # original  -->  [Visual.white, Visual.bright_yellow, Visual.bright_orange, Visual.bright_blue]
-        )
+        # Use unique (color, shape) combinations to avoid duplicate marker styles
+        # across highlighted entities in the same figure.
+        marker_colors = [
+            Visual.bright_orange,
+            Visual.magenta,
+            Visual.bright_yellow,
+            Visual.bright_blue,
+            Visual.pink,
+            Visual.gold,
+            Visual.silver,
+            Visual.ruby,
+            Visual.aqua,
+            Visual.emerald,
+            Visual.lime,
+            Visual.white,
+        ]
+        marker_shapes = [
+            "diamond",
+            "square",
+            "triangle-up",
+            "x",
+            "cross",
+            "pentagon",
+            "star",
+            "triangle-down",
+            "triangle-left",
+            "triangle-right",
+            "hexagon",
+            "circle",
+        ]
+        # First assign one-to-one color/shape styles so early highlighted entities
+        # always have both unique colors and unique shapes.
+        primary_count = min(len(marker_colors), len(marker_shapes))
+        step = max(primary_count - 1, 1)
+        self._marker_styles = [
+            (marker_colors[i], marker_shapes[(i * step) % primary_count])
+            for i in range(primary_count)
+        ]
 
-        self.marker_shape = (s for s in ["diamond", "square", "triangle-up", "hexagon"])
+        # Then append remaining unique (color, shape) combinations for overflow cases.
+        used_styles = set(self._marker_styles)
+        for color, shape in itertools.product(marker_colors, marker_shapes):
+            if (color, shape) not in used_styles:
+                self._marker_styles.append((color, shape))
+        self._marker_style_index = 0
         # State used for dynamic multi-entity annotations rendered from add_data_point.
         self._multi_annotation_items = []
         self._multi_annotation_indices = []
@@ -420,8 +461,7 @@ class DistributionPlot(Visual):
             text = [text]
         # We add one trace per metric, but keep only a single legend entry.
         legend = True
-        color = next(self.marker_color)
-        marker = next(self.marker_shape)
+        color, marker = self._next_marker_style()
 
         for i, col in enumerate(self.columns):
             temp_hover_string = hover_string
@@ -508,13 +548,36 @@ class DistributionPlot(Visual):
         Build an HTML marker token used inside combined annotation text.
         """
         marker_symbol_map = {
+            "star": "★",
             "diamond": "◆",
             "square": "■",
             "triangle-up": "▲",
+            "pentagon": "⬟",
+            "triangle-down": "▼",
             "hexagon": "⬢",
+            "circle": "●",
+            "x": "✕",
+            "cross": "✚",
+            "triangle-left": "◀",
+            "triangle-right": "▶",
         }
+
         glyph = marker_symbol_map.get(marker_symbol, "●")
+        
         return f"<span style='color:{rgb_to_color(color)}'>{glyph}</span>"
+
+    def _next_marker_style(self):
+        """
+        Return the next unique marker style (color + shape) for highlighted points.
+        """
+        if self._marker_style_index >= len(self._marker_styles):
+            raise ValueError(
+                "Exceeded available unique marker style combinations in this plot. "
+                f"Maximum unique highlighted entities: {len(self._marker_styles)}."
+            )
+        color, marker = self._marker_styles[self._marker_style_index]
+        self._marker_style_index += 1
+        return color, marker
 
     def _clear_multi_entity_annotations(self):
         """
@@ -2474,9 +2537,61 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
             rank_z_scale=2.0,
         )
 
-    def _resolve_companion_row(self, plot_df: pd.DataFrame, *, Companion_CB: Any = None, Companion_CB_ID: Any = None) -> Optional[pd.Series]:
-        if Companion_CB is None and Companion_CB_ID is None:
+    def _resolve_companion_row(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        Companion_CB: Any = None,
+        Companion_CB_ID: Any = None,
+        Companion_Rank: Optional[int] = None,
+    ) -> Optional[pd.Series]:
+        """
+        Resolve one companion row by either:
+        1) companion name/surname,
+        2) companion ID, or
+        3) companion rank within the current anchor sample.
+        """
+        if Companion_CB is None and Companion_CB_ID is None and Companion_Rank is None:
             return None
+
+        if Companion_Rank is not None:
+            if Companion_CB is not None or Companion_CB_ID is not None:
+                raise ValueError(
+                    "Please specify either Companion_Rank or Companion_CB/Companion_CB_ID, not both."
+                )
+            if not isinstance(Companion_Rank, (int, np.integer)) or int(Companion_Rank) <= 0:
+                raise ValueError("Companion_Rank must be a positive integer.")
+
+            requested_rank = int(Companion_Rank)
+            if "companion_rank_for_anchor" in plot_df.columns:
+                rank_values = pd.to_numeric(
+                    plot_df["companion_rank_for_anchor"], errors="coerce"
+                )
+                matches = plot_df[rank_values == float(requested_rank)]
+            else:
+                # Fallback when rank column is missing: use current deterministic order
+                # (already sorted by companion_fit_score desc, partner name asc).
+                if requested_rank > len(plot_df):
+                    matches = plot_df.iloc[0:0]
+                else:
+                    matches = plot_df.iloc[[requested_rank - 1]]
+
+            if matches.empty:
+                top_n_hint = (
+                    " The requested rank may be outside the currently filtered set (e.g., due to top_n)."
+                    if len(plot_df) > 0
+                    else ""
+                )
+                raise ValueError(
+                    f"No companion found at rank #{requested_rank} for the current anchor CB's sample."
+                    f"{top_n_hint}"
+                )
+            if len(matches) > 1:
+                candidates = matches["partner_player_name"].astype(str).tolist()
+                raise ValueError(
+                    f"Multiple companions found for rank #{requested_rank}: {', '.join(candidates)}"
+                )
+            return matches.iloc[0]
 
         self._ensure_columns(
             plot_df,
@@ -2571,8 +2686,11 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         dist_plot.add_title(
             title=f"CB-Companion Ground Duels Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
             subtitle=(
-                f"All {num_candidates} potential companions for {anchor_name} (directional A → B) \n"
-                "Metrics are at the CB-Companion-level (i.e. within the Anchor CB's sample), \nshowing the expected contribution of the companion to the CB-Pair's overall fit with the specified Anchor CB."
+                f"All {num_candidates} potential companions for {anchor_name} (directional A → B)"
+                "<br>"
+                "Metrics are at the CB-Companion-level (i.e. within the Anchor CB's sample),"
+                "<br>"
+                "showing the expected contribution of the companion to the CB-Pair's overall fit with the specified Anchor CB."
             ),
         )
         return dist_plot
@@ -2584,6 +2702,8 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         Anchor_CB_ID: Any = None,
         Companion_CB: Any = None,
         Companion_CB_ID: Any = None,
+        Companion_Rank: Optional[int] = None,
+        Companion_Ranks: Optional[Sequence[int]] = None,
         include_best: bool = True,
         include_worst: bool = False,
         include_anchor_CB_pool_average: bool = False,
@@ -2599,6 +2719,8 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
 
         The highlighted rows can include:
         - an explicitly selected companion
+        - an explicitly selected companion rank within the anchor CB's sample
+        - multiple explicitly selected companion ranks within the anchor CB's sample
         - best/worst companion for the anchor
         - the anchor's companion-pool average
         """
@@ -2647,13 +2769,49 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
 
         used_keys = set()
 
-        selected_companion = self._resolve_companion_row(
+        selected_companions: List[pd.Series] = []
+
+        if Companion_Ranks is not None:
+            if Companion_Rank is not None:
+                raise ValueError(
+                    "Please provide either Companion_Rank or Companion_Ranks, not both."
+                )
+            if isinstance(Companion_Ranks, (str, bytes)):
+                raise ValueError(
+                    "Companion_Ranks must be a sequence of positive integers, not a string."
+                )
+
+            unique_ranks: List[int] = []
+            for rank_value in Companion_Ranks:
+                if not isinstance(rank_value, (int, np.integer)) or int(rank_value) <= 0:
+                    raise ValueError(
+                        f"Invalid rank '{rank_value}' in Companion_Ranks. All ranks must be positive integers."
+                    )
+                rank_int = int(rank_value)
+                if rank_int not in unique_ranks:
+                    unique_ranks.append(rank_int)
+
+            for rank_int in unique_ranks:
+                rank_selected_companion = self._resolve_companion_row(
+                    plot_df,
+                    Companion_Rank=rank_int,
+                )
+                if rank_selected_companion is not None:
+                    selected_companions.append(rank_selected_companion)
+
+        single_selected_companion = self._resolve_companion_row(
             plot_df,
             Companion_CB=Companion_CB,
             Companion_CB_ID=Companion_CB_ID,
+            Companion_Rank=Companion_Rank,
         )
-        if selected_companion is not None:
+        if single_selected_companion is not None:
+            selected_companions.append(single_selected_companion)
+
+        for selected_companion in selected_companions:
             selected_key = self._companion_key(selected_companion)
+            if selected_key in used_keys:
+                continue
             used_keys.add(selected_key)
             selected_label = f"{anchor_name} + {selected_companion['partner_player_name']}"
             self._add_row_point(
@@ -2745,13 +2903,39 @@ class DistributionPlotPersonality(Visual):
         """
         self.empty = True
         self.columns = columns
-        # Cycled styles ensure multiple highlighted entities remain visually distinct.
-        self.marker_color = (
-            c for c in [Visual.white, Visual.bright_yellow, Visual.bright_blue]
-        )
-        self.marker_shape = (s for s in ["square", "hexagon", "diamond"])
+        # Use unique (color, shape) combinations within a figure.
+        marker_colors = [Visual.white, Visual.bright_yellow, Visual.bright_blue]
+        marker_shapes = ["square", "hexagon", "diamond"]
+        # First assign one-to-one color/shape styles so highlighted entities
+        # start with fully distinct colors and shapes.
+        primary_count = min(len(marker_colors), len(marker_shapes))
+        step = max(primary_count - 1, 1)
+        self._marker_styles = [
+            (marker_colors[i], marker_shapes[(i * step) % primary_count])
+            for i in range(primary_count)
+        ]
+
+        # Then append remaining unique (color, shape) combinations.
+        used_styles = set(self._marker_styles)
+        for color, shape in itertools.product(marker_colors, marker_shapes):
+            if (color, shape) not in used_styles:
+                self._marker_styles.append((color, shape))
+        self._marker_style_index = 0
         super().__init__(*args, **kwargs)
         self._setup_axes()
+
+    def _next_marker_style(self):
+        """
+        Return the next unique marker style (color + shape) for highlighted points.
+        """
+        if self._marker_style_index >= len(self._marker_styles):
+            raise ValueError(
+                "Exceeded available unique marker style combinations in this plot. "
+                f"Maximum unique highlighted entities: {len(self._marker_styles)}."
+            )
+        color, marker = self._marker_styles[self._marker_style_index]
+        self._marker_style_index += 1
+        return color, marker
 
     def _setup_axes(self):
         """
@@ -2831,8 +3015,7 @@ class DistributionPlotPersonality(Visual):
             text = [text]
         # We add one trace per metric, but keep only a single legend entry.
         legend = True
-        color = next(self.marker_color)
-        marker = next(self.marker_shape)
+        color, marker = self._next_marker_style()
 
         for i, col in enumerate(self.columns):
             temp_hover_string = hover_string
