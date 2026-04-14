@@ -1,8 +1,31 @@
 """
 Plotting utilities used by the Streamlit visual sandbox.
 
-The module provides reusable helpers and chart classes for player, country, and
-personality distribution views built with Plotly.
+This module is the central visualization layer for analysis notebooks and app
+views in this repository. It provides:
+
+1. **Low-level styling primitives**:
+   Shared colors, typography, and helper functions for consistent visual output.
+2. **Generic distribution plotting components**:
+   Reusable Plotly wrappers (`Visual`, `DistributionPlot`) for scatter-based
+   distribution comparisons with annotation support.
+3. **Ground-Duels analysis suites**:
+   Higher-level APIs that translate football analysis dataframes into
+   ready-to-render distribution plots for:
+   - single CB quality,
+   - CB pair quality-fit,
+   - anchor-to-companion fit (directional).
+4. **Personality plotting component**:
+   Specialized distribution view for personality-based metrics.
+
+Design goals:
+- **Consistency**: identical visual semantics across related analyses.
+- **Traceability**: hover payloads and annotations expose interpretable values
+  (raw values, z-scores, rank formatting) for technical and non-technical users.
+- **Robustness**: schema validation, deterministic entity resolution, and
+  explicit error messages for ambiguous or invalid user inputs.
+- **Extensibility**: resolver utilities and method-level overrides allow new
+  metrics and workflows to be integrated with minimal duplication.
 """
 
 import streamlit as st
@@ -13,6 +36,7 @@ import numpy as np
 import pandas as pd
 import re
 import unicodedata
+import itertools
 
 
 from utils.sentences import format_metric
@@ -91,6 +115,8 @@ class Visual:
     sapphire = hex_to_rgb("#0f52ba")
     table_green = hex_to_rgb("#009940")
     table_red = hex_to_rgb("#FF4B00")
+    aqua = hex_to_rgb("#00FFD5")
+    lime = hex_to_rgb("#C8FF00")
 
     def __init__(self, pdf=False, plot_type="scout"):
         """
@@ -249,13 +275,51 @@ class DistributionPlot(Visual):
         self.quality_metric_labels = self._normalize_metric_labels(quality_metric_labels)
         self.quality_metric_value_columns = self._normalize_metric_labels(quality_metric_value_columns, value_name = "quality_metric_value_columns")
         
-        # Cycled styles ensure multiple highlighted entities remain visually distinct.
-        self.marker_color = (
-            c for c in [Visual.bright_orange, Visual.magenta, Visual.bright_yellow, Visual.bright_blue]
-        # original  -->  [Visual.white, Visual.bright_yellow, Visual.bright_orange, Visual.bright_blue]
-        )
+        # Use unique (color, shape) combinations to avoid duplicate marker styles
+        # across highlighted entities in the same figure.
+        marker_colors = [
+            Visual.bright_orange,
+            Visual.magenta,
+            Visual.bright_yellow,
+            Visual.bright_blue,
+            Visual.pink,
+            Visual.gold,
+            Visual.silver,
+            Visual.ruby,
+            Visual.aqua,
+            Visual.emerald,
+            Visual.lime,
+            Visual.white,
+        ]
+        marker_shapes = [
+            "diamond",
+            "square",
+            "triangle-up",
+            "x",
+            "cross",
+            "pentagon",
+            "star",
+            "triangle-down",
+            "triangle-left",
+            "triangle-right",
+            "hexagon",
+            "circle",
+        ]
+        # First assign one-to-one color/shape styles so early highlighted entities
+        # always have both unique colors and unique shapes.
+        primary_count = min(len(marker_colors), len(marker_shapes))
+        step = max(primary_count - 1, 1)
+        self._marker_styles = [
+            (marker_colors[i], marker_shapes[(i * step) % primary_count])
+            for i in range(primary_count)
+        ]
 
-        self.marker_shape = (s for s in ["diamond", "square", "triangle-up", "hexagon"])
+        # Then append remaining unique (color, shape) combinations for overflow cases.
+        used_styles = set(self._marker_styles)
+        for color, shape in itertools.product(marker_colors, marker_shapes):
+            if (color, shape) not in used_styles:
+                self._marker_styles.append((color, shape))
+        self._marker_style_index = 0
         # State used for dynamic multi-entity annotations rendered from add_data_point.
         self._multi_annotation_items = []
         self._multi_annotation_indices = []
@@ -420,8 +484,7 @@ class DistributionPlot(Visual):
             text = [text]
         # We add one trace per metric, but keep only a single legend entry.
         legend = True
-        color = next(self.marker_color)
-        marker = next(self.marker_shape)
+        color, marker = self._next_marker_style()
 
         for i, col in enumerate(self.columns):
             temp_hover_string = hover_string
@@ -508,13 +571,36 @@ class DistributionPlot(Visual):
         Build an HTML marker token used inside combined annotation text.
         """
         marker_symbol_map = {
+            "star": "★",
             "diamond": "◆",
             "square": "■",
             "triangle-up": "▲",
+            "pentagon": "⬟",
+            "triangle-down": "▼",
             "hexagon": "⬢",
+            "circle": "●",
+            "x": "✕",
+            "cross": "✚",
+            "triangle-left": "◀",
+            "triangle-right": "▶",
         }
+
         glyph = marker_symbol_map.get(marker_symbol, "●")
+        
         return f"<span style='color:{rgb_to_color(color)}'>{glyph}</span>"
+
+    def _next_marker_style(self):
+        """
+        Return the next unique marker style (color + shape) for highlighted points.
+        """
+        if self._marker_style_index >= len(self._marker_styles):
+            raise ValueError(
+                "Exceeded available unique marker style combinations in this plot. "
+                f"Maximum unique highlighted entities: {len(self._marker_styles)}."
+            )
+        color, marker = self._marker_styles[self._marker_style_index]
+        self._marker_style_index += 1
+        return color, marker
 
     def _clear_multi_entity_annotations(self):
         """
@@ -720,13 +806,46 @@ class DistributionPlot(Visual):
         self.add_title(title, subtitle)
 
 
+
+
+# ---------------------------------------------------------------------
+# Ground-Duels Plotting Infrastructure
+# ---------------------------------------------------------------------
+# The classes below form a layered architecture:
+# - `_Ground_Duels_Distribution_Resolver`: shared data/selection utilities
+# - `Single_CB_*`, `CB_Pair_*`, `Anchor_CB_Companion_*`: public plot APIs
+# ---------------------------------------------------------------------
 class _Ground_Duels_Distribution_Resolver:
     """
-    Shared helper utilities used by Ground-Duels distribution plot wrappers.
+    Shared helper utilities used by all Ground-Duels distribution plot wrappers.
+
+    This resolver centralizes cross-cutting concerns such as:
+    - robust player/pair name normalization and resolution,
+    - rank-aware z-score handling,
+    - hover payload formatting,
+    - average-point construction.
+
+    Centralizing these behaviors keeps public plotting classes small and ensures
+    consistent semantics across single-CB, CB-pair, and companion-fit views.
     """
 
     @staticmethod
     def _normalize_text(value: Any) -> str:
+        """
+        Normalize free-text input for resilient matching.
+
+        The normalization pipeline is intentionally strict and deterministic:
+        - converts to lowercase,
+        - strips accents/diacritics,
+        - removes punctuation/special symbols,
+        - collapses repeated whitespace.
+
+        Args:
+            value: Any user-provided value that should be interpreted as text.
+
+        Returns:
+            Normalized tokenizable text; empty string for null-like values.
+        """
         if value is None:
             return ""
         text = str(value).strip().lower()
@@ -738,6 +857,15 @@ class _Ground_Duels_Distribution_Resolver:
 
     @classmethod
     def _tokenize(cls, value: Any) -> Tuple[str, ...]:
+        """
+        Split normalized text into lexical tokens.
+
+        Args:
+            value: Input value to normalize and tokenize.
+
+        Returns:
+            Tuple of tokens. Empty tuple for empty/invalid normalized text.
+        """
         normalized = cls._normalize_text(value)
         if not normalized:
             return tuple()
@@ -745,6 +873,17 @@ class _Ground_Duels_Distribution_Resolver:
 
     @staticmethod
     def _ensure_columns(df: pd.DataFrame, required_columns: Iterable[str], context: str) -> None:
+        """
+        Validate dataframe schema requirements.
+
+        Args:
+            df: Dataframe to validate.
+            required_columns: Columns that must exist in `df`.
+            context: Human-readable context included in validation errors.
+
+        Raises:
+            KeyError: If any required column is missing.
+        """
         missing = [col for col in required_columns if col not in df.columns]
         if missing:
             raise KeyError(
@@ -753,6 +892,15 @@ class _Ground_Duels_Distribution_Resolver:
 
     @staticmethod
     def _to_number_or_none(value: Any) -> Optional[float]:
+        """
+        Attempt safe scalar numeric conversion.
+
+        Args:
+            value: Value to convert.
+
+        Returns:
+            `float` when conversion is successful and finite; otherwise `None`.
+        """
         try:
             converted = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
         except Exception:
@@ -763,6 +911,28 @@ class _Ground_Duels_Distribution_Resolver:
 
     @classmethod
     def _resolve_entity(cls, candidates: pd.DataFrame, *, entity_value: Any = None, entity_id: Any = None, id_col: str, name_col: str, entity_label: str) -> pd.Series:
+        """
+        Resolve a single entity row from candidate IDs/names.
+
+        Resolution precedence:
+        1. Explicit ID match (numeric-safe first, then string fallback),
+        2. Exact normalized full-name match,
+        3. Unique token/surname subset match.
+
+        Ambiguity is never auto-resolved: a `ValueError` is raised with candidate
+        names so callers can disambiguate explicitly.
+
+        Args:
+            candidates: Candidate dataframe containing ID and name columns.
+            entity_value: Optional name/surname-like selector.
+            entity_id: Optional ID selector.
+            id_col: Candidate ID column name.
+            name_col: Candidate display-name column name.
+            entity_label: Label used in error messages (e.g., "CB player").
+
+        Returns:
+            The uniquely resolved candidate row.
+        """
         candidates = candidates[[id_col, name_col]].dropna(subset=[id_col, name_col]).drop_duplicates()
         if candidates.empty:
             raise ValueError(f"No {entity_label} candidates available to resolve.")
@@ -825,6 +995,20 @@ class _Ground_Duels_Distribution_Resolver:
 
     @staticmethod
     def _z_standardize(values: Union[pd.Series, Sequence[Any]], *, invert: bool = False, scale: float = 1.0) -> pd.Series:
+        """
+        Compute z-standardized values with optional sign inversion and scaling.
+
+        This helper is used both for standard metric normalization and rank-based
+        transformations (where lower raw rank means better, hence `invert=True`).
+
+        Args:
+            values: Numeric-like values to standardize.
+            invert: If true, multiply standardized values by `-1`.
+            scale: Multiplicative factor applied after standardization.
+
+        Returns:
+            Z-standardized series. If variance is zero/undefined, returns all NaN.
+        """
         series = pd.to_numeric(pd.Series(values), errors="coerce")
         std = series.std(ddof=0)
         if pd.isna(std) or std == 0:
@@ -836,12 +1020,30 @@ class _Ground_Duels_Distribution_Resolver:
 
     @classmethod
     def _is_rank_metric(cls, metric_name: str, raw_metric_name: Optional[str]) -> bool:
+        """
+        Identify rank-like metrics by inspecting z/raw metric names.
+
+        Args:
+            metric_name: Plotted metric column (typically z-score column).
+            raw_metric_name: Raw companion/value column mapped to that metric.
+
+        Returns:
+            True when either name contains the token `rank`.
+        """
         metric_token = str(metric_name).lower()
         raw_metric_token = str(raw_metric_name).lower() if raw_metric_name is not None else ""
         return ("rank" in metric_token) or ("rank" in raw_metric_token)
 
     @classmethod
     def _format_hover_line(cls, metric_name: str, raw_metric_name: Optional[str], metric_label: str, raw_value: Any, z_value: Any) -> str:
+        """
+        Build one semantic-aware hover text line for a metric.
+
+        Behavior:
+        - metrics without a raw column mapping show z-score only,
+        - rank-like metrics show integer rank format (`# <int>`),
+        - all other metrics show `raw + corresponding z-score`.
+        """
         if raw_metric_name is None:
             return f"Z-score = {z_value:.2f}" if pd.notna(z_value) else "Z-score = N/A"
         if cls._is_rank_metric(metric_name, raw_metric_name):
@@ -852,6 +1054,26 @@ class _Ground_Duels_Distribution_Resolver:
 
     @classmethod
     def _attach_hover_payload(cls, plot_df: pd.DataFrame, *, metric_cols: Sequence[str], metric_labels: Dict[str, str], metric_value_columns: Dict[str, Optional[str]], hover_payload_suffix: str = "_hover_payload", fill_missing_rank_z: bool = True, rank_z_scale: float = 2.0) -> pd.DataFrame:
+        """
+        Attach per-metric hover payload tuples used by `DistributionPlot`.
+
+        For each metric, this method optionally reconstructs missing/all-NaN
+        rank z-score columns from the corresponding raw rank column, then creates
+        payload tuples of the form:
+        `(metric_label, raw_value, z_value, formatted_hover_line)`.
+
+        Args:
+            plot_df: Plotting dataframe to enrich in place.
+            metric_cols: Metrics expected in the distribution plot.
+            metric_labels: Human-readable labels per metric.
+            metric_value_columns: Raw-value column mapping per metric.
+            hover_payload_suffix: Suffix for generated payload columns.
+            fill_missing_rank_z: Whether rank z-score fallback should be applied.
+            rank_z_scale: Scaling factor used when reconstructing rank z-scores.
+
+        Returns:
+            The same dataframe instance, enriched with hover payload columns.
+        """
         for metric in metric_cols:
             raw_metric = metric_value_columns.get(metric, metric.replace("z_", "", 1))
 
@@ -911,6 +1133,20 @@ class _Ground_Duels_Distribution_Resolver:
 
     @classmethod
     def _split_pair_string(cls, pair_value: str) -> Tuple[str, str]:
+        """
+        Parse user-friendly pair strings into two entity selectors.
+
+        Accepted separators:
+        - `+`
+        - `and`
+        - `&`
+
+        Args:
+            pair_value: Pair input such as `"A + B"` or `"A and B"`.
+
+        Returns:
+            Tuple of two stripped entity strings.
+        """
         if not isinstance(pair_value, str):
             raise ValueError("CB_Pair must be a string such as 'A + B', 'A and B', or 'A & B'.")
 
@@ -923,6 +1159,27 @@ class _Ground_Duels_Distribution_Resolver:
 
     @classmethod
     def _build_average_point(cls, *, plot_df: pd.DataFrame, metric_cols: Sequence[str], metric_labels: Dict[str, str], metric_value_columns: Dict[str, Optional[str]], display_name_col: str, display_name_value: str, hover_payload_suffix: str = "_hover_payload") -> pd.Series:
+        """
+        Build a synthetic cohort-average point compatible with `DistributionPlot`.
+
+        The returned series contains:
+        - average z-scores for each plotted metric,
+        - average raw values for mapped raw columns (when available),
+        - per-metric hover payload entries matching normal row payload shape,
+        - a display-name field to support legend/labels.
+
+        Args:
+            plot_df: Source dataframe defining the cohort.
+            metric_cols: Metrics used in the plot.
+            metric_labels: Human-readable labels per metric.
+            metric_value_columns: Raw-value mapping per metric.
+            display_name_col: Column name used by the plot as display label.
+            display_name_value: Display label for the synthetic average point.
+            hover_payload_suffix: Suffix used for hover payload columns.
+
+        Returns:
+            Series representing one synthetic average row.
+        """
         avg_raw_metrics = pd.Series(
             {
                 raw_col: pd.to_numeric(plot_df[raw_col], errors="coerce").mean()
@@ -1275,6 +1532,20 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
         return dist_plot
 
     def _resolve_single_cb(self, plot_df: pd.DataFrame, *, CB: Any = None, CB_ID: Any = None) -> pd.Series:
+        """
+        Resolve a single CB row from the prepared single-CB plotting dataframe.
+
+        If neither `CB` nor `CB_ID` is provided, the first row is selected as a
+        deterministic fallback to keep quick exploratory plotting simple.
+
+        Args:
+            plot_df: Prepared plotting dataframe containing `player.id/name`.
+            CB: Optional player name/surname selector.
+            CB_ID: Optional player ID selector.
+
+        Returns:
+            One resolved plotting row for the selected CB.
+        """
         candidates = plot_df[["player.id", "player.name"]].drop_duplicates()
         if CB is None and CB_ID is None:
             return plot_df.iloc[0]
@@ -1619,6 +1890,8 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
         constructor_value_columns = self._configured_pair_metric_value_columns
 
         if split_view:
+            # Split mode resolves each side independently, then builds a combined
+            # superset config used for shared data preparation/hover payloads.
             configured_left = self._configured_left_metrics
             configured_right = self._configured_right_metrics
 
@@ -1774,6 +2047,15 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
         return dist_plot
 
     def _player_candidates_from_pairs(self, plot_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Build a normalized unique player-candidate table from pair columns.
+
+        Args:
+            plot_df: CB-pair dataframe containing CB1/CB2 ID and name columns.
+
+        Returns:
+            Two-column dataframe (`player.id`, `player.name`) with unique players.
+        """
         self._ensure_columns(
             plot_df,
             ["player.id_CB1", "player.name_CB1", "player.id_CB2", "player.name_CB2"],
@@ -1788,6 +2070,18 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
         return pd.concat([cb1, cb2], ignore_index=True).drop_duplicates()
 
     def _resolve_pair_row(self, plot_df: pd.DataFrame, *, CB_Pair: Any = None, CB_1: Any = None, CB_2: Any = None, CB_1_ID: Any = None, CB_2_ID: Any = None) -> Optional[pd.Series]:
+        """
+        Resolve one pair row from flexible pair selectors.
+
+        Supported selection modes:
+        - `CB_Pair` string formats (`A + B`, `A and B`, `A & B`),
+        - `CB_Pair` tuple/list `(CB_1, CB_2)`,
+        - dict-based specs with `CB_1`/`CB_2` and optional IDs,
+        - explicit `CB_1`/`CB_2` + optional IDs.
+
+        Returns:
+            Matching pair row, or `None` when no selector was provided.
+        """
         if (
             CB_Pair is None
             and CB_1 is None
@@ -1854,11 +2148,23 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
         return matches.iloc[0]
 
     def _pair_key(self, row: pd.Series) -> str:
+        """
+        Build a stable deduplication key for a pair-like row.
+
+        Prefers explicit `pair_key` when available, then falls back to `pair_name`.
+        """
         if "pair_key" in row.index and pd.notna(row["pair_key"]):
             return str(row["pair_key"])
         return str(row.get("pair_name", ""))
 
     def _add_row_point(self, dist_plot: DistributionPlot, *, row: pd.Series, display_name: str, hover_payload_suffix: str, hover_string: str, multi_annotations: bool, add_single_annotations: bool) -> None:
+        """
+        Add one highlighted pair row to a distribution plot.
+
+        This wrapper keeps annotation mode wiring centralized so callers can
+        switch between single-entity and multi-entity annotation rendering
+        without duplicating plotting code.
+        """
         if multi_annotations:
             dist_plot.add_data_point(
                 ser_plot=row,
@@ -2347,6 +2653,13 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         )
 
     def _anchor_candidates(self) -> pd.DataFrame:
+        """
+        Build candidate anchor table for anchor selection resolution.
+
+        Returns:
+            Dataframe with `anchor_player_id` and `anchor_player_name`.
+            If IDs are unavailable in source data, synthetic IDs are generated.
+        """
         self._ensure_columns(
             self.df_ground_duel_companion_fit,
             ["anchor_player_name"],
@@ -2362,6 +2675,14 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         return candidates
 
     def _resolve_anchor(self, *, Anchor_CB: Any = None, Anchor_CB_ID: Any = None) -> pd.Series:
+        """
+        Resolve the active anchor CB from name/surname and/or ID input.
+
+        Behavior:
+        - if no input is provided, reuses previously initialized anchor when
+          possible; otherwise falls back to first alphabetical anchor.
+        - if ID is provided but the dataset has no anchor ID column, raises.
+        """
         candidates = self._anchor_candidates()
 
         if Anchor_CB is None and Anchor_CB_ID is None:
@@ -2474,9 +2795,61 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
             rank_z_scale=2.0,
         )
 
-    def _resolve_companion_row(self, plot_df: pd.DataFrame, *, Companion_CB: Any = None, Companion_CB_ID: Any = None) -> Optional[pd.Series]:
-        if Companion_CB is None and Companion_CB_ID is None:
+    def _resolve_companion_row(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        Companion_CB: Any = None,
+        Companion_CB_ID: Any = None,
+        Companion_Rank: Optional[int] = None,
+    ) -> Optional[pd.Series]:
+        """
+        Resolve one companion row by either:
+        1) companion name/surname,
+        2) companion ID, or
+        3) companion rank within the current anchor sample.
+        """
+        if Companion_CB is None and Companion_CB_ID is None and Companion_Rank is None:
             return None
+
+        if Companion_Rank is not None:
+            if Companion_CB is not None or Companion_CB_ID is not None:
+                raise ValueError(
+                    "Please specify either Companion_Rank or Companion_CB/Companion_CB_ID, not both."
+                )
+            if not isinstance(Companion_Rank, (int, np.integer)) or int(Companion_Rank) <= 0:
+                raise ValueError("Companion_Rank must be a positive integer.")
+
+            requested_rank = int(Companion_Rank)
+            if "companion_rank_for_anchor" in plot_df.columns:
+                rank_values = pd.to_numeric(
+                    plot_df["companion_rank_for_anchor"], errors="coerce"
+                )
+                matches = plot_df[rank_values == float(requested_rank)]
+            else:
+                # Fallback when rank column is missing: use current deterministic order
+                # (already sorted by companion_fit_score desc, partner name asc).
+                if requested_rank > len(plot_df):
+                    matches = plot_df.iloc[0:0]
+                else:
+                    matches = plot_df.iloc[[requested_rank - 1]]
+
+            if matches.empty:
+                top_n_hint = (
+                    " The requested rank may be outside the currently filtered set (e.g., due to top_n)."
+                    if len(plot_df) > 0
+                    else ""
+                )
+                raise ValueError(
+                    f"No companion found at rank #{requested_rank} for the current anchor CB's sample."
+                    f"{top_n_hint}"
+                )
+            if len(matches) > 1:
+                candidates = matches["partner_player_name"].astype(str).tolist()
+                raise ValueError(
+                    f"Multiple companions found for rank #{requested_rank}: {', '.join(candidates)}"
+                )
+            return matches.iloc[0]
 
         self._ensure_columns(
             plot_df,
@@ -2525,11 +2898,20 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         return matches.iloc[0]
 
     def _companion_key(self, row: pd.Series) -> str:
+        """
+        Build a stable deduplication key for companion rows.
+        """
         if "partner_player_id" in row.index and pd.notna(row["partner_player_id"]):
             return str(row["partner_player_id"])
         return self._normalize_text(row.get("partner_player_name", ""))
 
     def _add_row_point(self, dist_plot: DistributionPlot, *, row: pd.Series, display_name: str, hover_payload_suffix: str, hover_string: str, multi_annotations: bool, add_single_annotations: bool) -> None:
+        """
+        Add one highlighted companion row to the anchor-companion distribution.
+
+        Args mirror the pair-level `_add_row_point` helper and are intentionally
+        aligned for maintenance consistency across plot suites.
+        """
         if multi_annotations:
             dist_plot.add_data_point(
                 ser_plot=row,
@@ -2571,8 +2953,11 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         dist_plot.add_title(
             title=f"CB-Companion Ground Duels Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
             subtitle=(
-                f"All {num_candidates} potential companions for {anchor_name} (directional A → B) \n"
-                "Metrics are at the CB-Companion-level (i.e. within the Anchor CB's sample), \nshowing the expected contribution of the companion to the CB-Pair's overall fit with the specified Anchor CB."
+                f"All {num_candidates} potential companions for {anchor_name} (directional A → B)"
+                "<br>"
+                "Metrics are at the CB-Companion-level (i.e. within the Anchor CB's sample),"
+                "<br>"
+                "showing the expected contribution of the companion to the CB-Pair's overall fit with the specified Anchor CB."
             ),
         )
         return dist_plot
@@ -2584,6 +2969,8 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
         Anchor_CB_ID: Any = None,
         Companion_CB: Any = None,
         Companion_CB_ID: Any = None,
+        Companion_Rank: Optional[int] = None,
+        Companion_Ranks: Optional[Sequence[int]] = None,
         include_best: bool = True,
         include_worst: bool = False,
         include_anchor_CB_pool_average: bool = False,
@@ -2599,6 +2986,8 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
 
         The highlighted rows can include:
         - an explicitly selected companion
+        - an explicitly selected companion rank within the anchor CB's sample
+        - multiple explicitly selected companion ranks within the anchor CB's sample
         - best/worst companion for the anchor
         - the anchor's companion-pool average
         """
@@ -2647,13 +3036,54 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
 
         used_keys = set()
 
-        selected_companion = self._resolve_companion_row(
+        selected_companions: List[pd.Series] = []
+
+        # Selection mode A: multiple explicit ranks provided by the caller.
+        # Each rank is resolved independently in current anchor/top_n context.
+        if Companion_Ranks is not None:
+            if Companion_Rank is not None:
+                raise ValueError(
+                    "Please provide either Companion_Rank or Companion_Ranks, not both."
+                )
+            if isinstance(Companion_Ranks, (str, bytes)):
+                raise ValueError(
+                    "Companion_Ranks must be a sequence of positive integers, not a string."
+                )
+
+            unique_ranks: List[int] = []
+            for rank_value in Companion_Ranks:
+                if not isinstance(rank_value, (int, np.integer)) or int(rank_value) <= 0:
+                    raise ValueError(
+                        f"Invalid rank '{rank_value}' in Companion_Ranks. All ranks must be positive integers."
+                    )
+                rank_int = int(rank_value)
+                if rank_int not in unique_ranks:
+                    unique_ranks.append(rank_int)
+
+            for rank_int in unique_ranks:
+                rank_selected_companion = self._resolve_companion_row(
+                    plot_df,
+                    Companion_Rank=rank_int,
+                )
+                if rank_selected_companion is not None:
+                    selected_companions.append(rank_selected_companion)
+
+        # Selection mode B: one explicit companion selector (name/ID/rank).
+        single_selected_companion = self._resolve_companion_row(
             plot_df,
             Companion_CB=Companion_CB,
             Companion_CB_ID=Companion_CB_ID,
+            Companion_Rank=Companion_Rank,
         )
-        if selected_companion is not None:
+        if single_selected_companion is not None:
+            selected_companions.append(single_selected_companion)
+
+        # Deduplicate selected rows so the same companion is not plotted twice
+        # when selection criteria overlap (e.g., explicit rank equals best row).
+        for selected_companion in selected_companions:
             selected_key = self._companion_key(selected_companion)
+            if selected_key in used_keys:
+                continue
             used_keys.add(selected_key)
             selected_label = f"{anchor_name} + {selected_companion['partner_player_name']}"
             self._add_row_point(
@@ -2745,13 +3175,39 @@ class DistributionPlotPersonality(Visual):
         """
         self.empty = True
         self.columns = columns
-        # Cycled styles ensure multiple highlighted entities remain visually distinct.
-        self.marker_color = (
-            c for c in [Visual.white, Visual.bright_yellow, Visual.bright_blue]
-        )
-        self.marker_shape = (s for s in ["square", "hexagon", "diamond"])
+        # Use unique (color, shape) combinations within a figure.
+        marker_colors = [Visual.white, Visual.bright_yellow, Visual.bright_blue]
+        marker_shapes = ["square", "hexagon", "diamond"]
+        # First assign one-to-one color/shape styles so highlighted entities
+        # start with fully distinct colors and shapes.
+        primary_count = min(len(marker_colors), len(marker_shapes))
+        step = max(primary_count - 1, 1)
+        self._marker_styles = [
+            (marker_colors[i], marker_shapes[(i * step) % primary_count])
+            for i in range(primary_count)
+        ]
+
+        # Then append remaining unique (color, shape) combinations.
+        used_styles = set(self._marker_styles)
+        for color, shape in itertools.product(marker_colors, marker_shapes):
+            if (color, shape) not in used_styles:
+                self._marker_styles.append((color, shape))
+        self._marker_style_index = 0
         super().__init__(*args, **kwargs)
         self._setup_axes()
+
+    def _next_marker_style(self):
+        """
+        Return the next unique marker style (color + shape) for highlighted points.
+        """
+        if self._marker_style_index >= len(self._marker_styles):
+            raise ValueError(
+                "Exceeded available unique marker style combinations in this plot. "
+                f"Maximum unique highlighted entities: {len(self._marker_styles)}."
+            )
+        color, marker = self._marker_styles[self._marker_style_index]
+        self._marker_style_index += 1
+        return color, marker
 
     def _setup_axes(self):
         """
@@ -2831,8 +3287,7 @@ class DistributionPlotPersonality(Visual):
             text = [text]
         # We add one trace per metric, but keep only a single legend entry.
         legend = True
-        color = next(self.marker_color)
-        marker = next(self.marker_shape)
+        color, marker = self._next_marker_style()
 
         for i, col in enumerate(self.columns):
             temp_hover_string = hover_string
