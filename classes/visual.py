@@ -1,4 +1,4 @@
-"""
+﻿"""
 Plotting utilities used by the Streamlit visual sandbox.
 
 This module is the central visualization layer for analysis notebooks and app
@@ -96,13 +96,9 @@ class Visual:
     """
 
     # Can't use streamlit options due to report generation
-    dark_green = hex_to_rgb(
-        "#002c1c"
-    )  # hex_to_rgb(st.get_option("theme.secondaryBackgroundColor"))
+    dark_green = hex_to_rgb("#002c1c")  # hex_to_rgb(st.get_option("theme.secondaryBackgroundColor"))
     medium_green = hex_to_rgb("#003821")
-    bright_green = hex_to_rgb(
-        "#00A938"
-    )  # hex_to_rgb(st.get_option("theme.primaryColor"))
+    bright_green = hex_to_rgb("#00A938")  # hex_to_rgb(st.get_option("theme.primaryColor"))
     purple = hex_to_rgb("#800080")
     magenta = hex_to_rgb("#ff00ff")
     pink = hex_to_rgb("#ff69b4")
@@ -1624,13 +1620,11 @@ class Single_CB_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolv
         """
         if subtitle_style == "comparison":
             subtitle = (
-                f"Based on {len(self.z_scores)} CB players with ≥ {self.min_num_duels_involved_in_threshold} duels "
-                f"& playing time ≥ {self.min_minutes_played_threshold} minutes"
+                f"Based on {len(self.z_scores)} CB players with ≥ {self.min_num_duels_involved_in_threshold} duels & playing time ≥ {self.min_minutes_played_threshold} minutes"
             )
         else:
             subtitle = (
-                f"Based on {len(self.z_scores)} CB players with ≥ {self.min_num_duels_involved_in_threshold} duels "
-                f"& playing time ≥ {self.min_minutes_played_threshold} minutes"
+                f"Based on {len(self.z_scores)} CB players with ≥ {self.min_num_duels_involved_in_threshold} duels & playing time ≥ {self.min_minutes_played_threshold} minutes"
             )
 
         dist_plot = DistributionPlot(
@@ -3465,7 +3459,7 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
 
 class _Aerial_Duels_Distribution_Resolver:
     """
-    Shared helper utilities used by all Ground-Duels distribution plot wrappers.
+    Shared helper utilities used by all Aerial-Duels distribution plot wrappers.
 
     This resolver centralizes cross-cutting concerns such as:
     - robust player/pair name normalization and resolution,
@@ -3473,8 +3467,7 @@ class _Aerial_Duels_Distribution_Resolver:
     - hover payload formatting,
     - average-point construction.
 
-    Centralizing these behaviors keeps public plotting classes small and ensures
-    consistent semantics across single-CB, CB-pair, and companion-fit views.
+    Centralizing these behaviors keeps public plotting classes small and ensures consistent semantics across single-CB, CB-pair, and companion-fit views.
     """
 
     @staticmethod
@@ -3556,6 +3549,106 @@ class _Aerial_Duels_Distribution_Resolver:
         if pd.isna(converted):
             return None
         return float(converted)
+
+    @staticmethod
+    def _coerce_positive_rank(rank_value: Any, *, param_name: str) -> int:
+        """
+        Validate and coerce one rank selector to a positive integer.
+
+        Args:
+            rank_value: Candidate rank value.
+            param_name: Parameter name used in error messages.
+
+        Returns:
+            Rank as a positive integer.
+        """
+        if not isinstance(rank_value, (int, np.integer)) or int(rank_value) <= 0:
+            raise ValueError(f"{param_name} must be a positive integer.")
+        return int(rank_value)
+
+    @classmethod
+    def _coerce_unique_positive_ranks(
+        cls,
+        rank_values: Sequence[Any],
+        *,
+        param_name: str,
+    ) -> List[int]:
+        """
+        Validate, coerce, and deduplicate a rank-sequence selector.
+
+        Args:
+            rank_values: Sequence of candidate rank values.
+            param_name: Parameter name used in error messages.
+
+        Returns:
+            Ordered list of unique positive integers.
+        """
+        if isinstance(rank_values, (str, bytes)):
+            raise ValueError(
+                f"{param_name} must be a sequence of positive integers, not a string."
+            )
+
+        normalized: List[int] = []
+        for rank_value in rank_values:
+            rank_int = cls._coerce_positive_rank(rank_value, param_name=param_name)
+            if rank_int not in normalized:
+                normalized.append(rank_int)
+        return normalized
+
+    @classmethod
+    def _resolve_row_by_rank(
+        cls,
+        plot_df: pd.DataFrame,
+        *,
+        rank_column: str,
+        rank_value: Any,
+        entity_label: str,
+        display_column: str,
+    ) -> pd.Series:
+        """
+        Resolve one row by exact raw-ranking value.
+
+        Args:
+            plot_df: Candidate dataframe to search.
+            rank_column: Raw rank column name.
+            rank_value: Requested rank value.
+            entity_label: Human-readable entity label for errors.
+            display_column: Column used to list candidate names in ambiguity errors.
+
+        Returns:
+            The uniquely resolved row for the requested rank.
+        """
+        requested_rank = cls._coerce_positive_rank(
+            rank_value,
+            param_name=f"{entity_label} rank",
+        )
+
+        if rank_column not in plot_df.columns:
+            raise KeyError(
+                f"Cannot resolve {entity_label} by rank because column '{rank_column}' "
+                "is not available in the plotting dataframe."
+            )
+
+        rank_values = pd.to_numeric(plot_df[rank_column], errors="coerce")
+        matches = plot_df[rank_values == float(requested_rank)]
+
+        if matches.empty:
+            raise ValueError(
+                f"No {entity_label} found at rank #{requested_rank}."
+            )
+        if len(matches) > 1:
+            candidates = (
+                matches[display_column]
+                .dropna()
+                .astype(str)
+                .drop_duplicates()
+                .tolist()
+            )
+            raise ValueError(
+                f"Multiple {entity_label} entries found at rank #{requested_rank}: "
+                f"{', '.join(candidates)}"
+            )
+        return matches.iloc[0]
 
     @classmethod
     def _resolve_entity(cls, candidates: pd.DataFrame, *, entity_value: Any = None, entity_id: Any = None, id_col: str, name_col: str, entity_label: str) -> pd.Series:
@@ -3979,7 +4072,7 @@ class _Aerial_Duels_Distribution_Resolver:
 
 class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver):
     """
-    Build Ground-Duels distribution plots for:
+    Build Aerial-Duels distribution plots for:
     1. One selected CB against the full cohort
     2. Multiple selected CBs in comparison mode
 
@@ -3990,24 +4083,24 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
         "z_duels_per90",
         "z_card_discipline",
         "z_discipline",
-        "z_interceptions_per90",
+        "z_aerial_wins_per90",
         "z_duel_success_rate",
         "z_possession_win_rate",
-        "CB_ground_duels_quality_z_score",
-        "CB_rank_for_ground_duels_quality_z_score"
+        "CB_aerial_duels_quality_z_score",
+        "CB_rank_for_aerial_duels_quality_z_score"
     ]
 
 
     DEFAULT_METRIC_LABELS = {
-        "z_duels_per90": "Ground Duels per-90",
+        "z_duels_per90": "Aerial Duels per-90",
         "z_card_discipline": "Card Discipline",
         "z_discipline": "(Overall) Discipline",
-        "z_interceptions_per90": "Interceptions per-90",
-        "z_duel_success_rate": "Ground Duel Success Rate",
+        "z_aerial_wins_per90": "Aerial Wins per-90",
+        "z_duel_success_rate": "Aerial Duel Success Rate",
         "z_possession_win_rate": "Possession Win Rate",
-        "CB_ground_duels_quality_z_score": "CB's (Overall) Ground Duels Quality Score",
-        "CB_rank_for_ground_duels_quality_z_score": "CB's (Ground Duels Quality) Ranking",
-        "CB_rank_for_ground_duels_quality": "CB's (Ground Duels Quality) Ranking"
+        "CB_aerial_duels_quality_z_score": "CB's (Overall) Aerial Duels Quality Score",
+        "CB_rank_for_aerial_duels_quality_z_score": "CB's (Aerial Duels Quality) Ranking",
+        "CB_rank_for_aerial_duels_quality": "CB's (Aerial Duels Quality) Ranking"
     }
 
 
@@ -4015,15 +4108,16 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
         "z_duels_per90": "duels_per90",
         "z_card_discipline": "card_discipline",
         "z_discipline": "discipline",
-        "z_interceptions_per90": "interceptions_per90",
+        "z_aerial_wins_per90": "aerial_wins_per90",
         "z_duel_success_rate": "duel_success_rate",
         "z_possession_win_rate": "possession_win_rate",
-        "CB_ground_duels_quality_z_score": None,
-        "CB_rank_for_ground_duels_quality_z_score": "CB_rank_for_ground_duels_quality",
+        "CB_aerial_duels_quality_z_score": None,  # No separate raw column for the overall aerial duel quality z-score, as it's a composite metric derived from the z-scores of the individual quality metrics, so we just use the z-score column for both the value and the label in this case - no raw value or label in the plot's tooltip.
+        "CB_rank_for_aerial_duels_quality_z_score": "CB_rank_for_aerial_duels_quality"   # we can show the raw rank value in the hover tooltip for context, even though the x-axis position is based on the z-scored rank (where higher is better fit)
     }
 
 
     RANK_Z_SCORE_SCALE = 2.0
+    RAW_RANK_COLUMN = "CB_rank_for_aerial_duels_quality"
 
 
     def __init__(
@@ -4103,13 +4197,18 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
             col for col in dict.fromkeys(metric_value_columns.values()) if col is not None
         ]
         duel_summary_df = self.duel_summary.reset_index()
+        always_include_raw_columns: List[str] = []
+        if self.RAW_RANK_COLUMN in duel_summary_df.columns:
+            always_include_raw_columns.append(self.RAW_RANK_COLUMN)
         fallback_metric_columns = [
             metric
             for metric in metrics
             if metric not in z_scores_df.columns and metric in duel_summary_df.columns
         ]
         required_duel_summary_columns = list(
-            dict.fromkeys(raw_metric_columns + fallback_metric_columns)
+            dict.fromkeys(
+                raw_metric_columns + fallback_metric_columns + always_include_raw_columns
+            )
         )
         self._ensure_columns(
             duel_summary_df,
@@ -4128,7 +4227,7 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
         )
 
         # Spread rank-based points for readability while keeping raw rank values in labels/tooltips via `metric_value_columns`.
-        rank_metric_col = "CB_rank_for_ground_duels_quality_z_score"
+        rank_metric_col = "CB_rank_for_aerial_duels_quality_z_score"
         if rank_metric_col in plot_df.columns:
             plot_df[rank_metric_col] = (
                 pd.to_numeric(plot_df[rank_metric_col], errors="coerce")
@@ -4174,29 +4273,68 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
             quality_metric_value_columns=dict(metric_value_columns),
         )
         dist_plot.add_title(
-            title="CB Ground Duel Quality Distribution",
+            title="CB Aerial Duel Quality Distribution",
             subtitle=subtitle,
         )
         return dist_plot
 
-    def _resolve_single_cb(self, plot_df: pd.DataFrame, *, CB: Any = None, CB_ID: Any = None) -> pd.Series:
+    def _resolve_single_cb_by_rank(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        CB_Rank: Any,
+    ) -> pd.Series:
+        """
+        Resolve one CB row by raw Aerial-Duels-quality ranking value.
+
+        Args:
+            plot_df: Prepared plotting dataframe.
+            CB_Rank: Requested rank in the raw ranking column.
+
+        Returns:
+            One resolved row for the requested rank.
+        """
+        return self._resolve_row_by_rank(
+            plot_df,
+            rank_column=self.RAW_RANK_COLUMN,
+            rank_value=CB_Rank,
+            entity_label="CB player",
+            display_column="player.name",
+        )
+
+    def _resolve_single_cb(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        CB: Any = None,
+        CB_ID: Any = None,
+        CB_Rank: Any = None,
+    ) -> pd.Series:
         """
         Resolve a single CB row from the prepared single-CB plotting dataframe.
 
-        If neither `CB` nor `CB_ID` is provided, the first row is selected as a
+        If neither `CB`, `CB_ID`, nor `CB_Rank` is provided, the first row is selected as a
         deterministic fallback to keep quick exploratory plotting simple.
 
         Args:
             plot_df: Prepared plotting dataframe containing `player.id/name`.
             CB: Optional player name/surname selector.
             CB_ID: Optional player ID selector.
+            CB_Rank: Optional raw ranking selector.
 
         Returns:
             One resolved plotting row for the selected CB.
         """
         candidates = plot_df[["player.id", "player.name"]].drop_duplicates()
-        if CB is None and CB_ID is None:
+        if CB is None and CB_ID is None and CB_Rank is None:
             return plot_df.iloc[0]
+
+        if CB_Rank is not None:
+            if CB is not None or CB_ID is not None:
+                raise ValueError(
+                    "Please provide either CB_Rank or CB/CB_ID, not both."
+                )
+            return self._resolve_single_cb_by_rank(plot_df, CB_Rank=CB_Rank)
 
         resolved = self._resolve_entity(
             candidates,
@@ -4216,6 +4354,7 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
         *,
         CB: Any = None,
         CB_ID: Any = None,
+        CB_Rank: Optional[int] = None,
         include_league_average: bool = True,
         metrics: Optional[Sequence[str]] = None,
         metric_labels: Optional[Mapping[str, str]] = None,
@@ -4223,7 +4362,12 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
         show: bool = True,
     ) -> DistributionPlot:
         """
-        Plot one selected CB against the full single-CB Ground-Duels distribution.
+        Plot one selected CB against the full single-CB Aerial-Duels distribution.
+
+        Selection options:
+        - `CB` (name/surname),
+        - `CB_ID`,
+        - `CB_Rank` (raw quality ranking value).
         """
         resolved_metrics, resolved_labels, resolved_value_columns = (
             self._resolve_current_metric_config(
@@ -4257,7 +4401,12 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
             hover_string=hover_string,
         )
 
-        selected_cb = self._resolve_single_cb(plot_df, CB=CB, CB_ID=CB_ID)
+        selected_cb = self._resolve_single_cb(
+            plot_df,
+            CB=CB,
+            CB_ID=CB_ID,
+            CB_Rank=CB_Rank,
+        )
         dist_plot.add_data_point(
             ser_plot=selected_cb,
             plots="",
@@ -4296,6 +4445,8 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
         *,
         CBs: Optional[Sequence[Any]] = None,
         CB_IDs: Optional[Sequence[Any]] = None,
+        CB_Rank: Optional[int] = None,
+        CB_Ranks: Optional[Sequence[int]] = None,
         include_league_average: bool = True,
         multi_annotations: bool = True,
         metrics: Optional[Sequence[str]] = None,
@@ -4305,6 +4456,11 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
     ) -> DistributionPlot:
         """
         Plot one or more selected CBs in comparison mode.
+
+        CBs can be selected by:
+        - `CBs` (names/surnames),
+        - `CB_IDs`,
+        - `CB_Rank` / `CB_Ranks` (raw quality ranking values).
         """
         resolved_metrics, resolved_labels, resolved_value_columns = (
             self._resolve_current_metric_config(
@@ -4338,18 +4494,53 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
             hover_string=hover_string,
         )
 
-        requested_items: List[Tuple[Any, Any]] = []
+        requested_items: List[Tuple[str, Any, Any]] = []
         for cb_id in (CB_IDs or []):
-            requested_items.append((None, cb_id))
+            requested_items.append(("id", None, cb_id))
         for cb_name in (CBs or []):
-            requested_items.append((cb_name, None))
+            requested_items.append(("name", cb_name, None))
+
+        # Rank selectors are optional and additive in comparison mode.
+        # They can be used alone or mixed with explicit name/ID selectors.
+        if CB_Ranks is not None:
+            if CB_Rank is not None:
+                raise ValueError(
+                    "Please provide either CB_Rank or CB_Ranks, not both."
+                )
+            for rank_value in self._coerce_unique_positive_ranks(
+                CB_Ranks,
+                param_name="CB_Ranks",
+            ):
+                requested_items.append(("rank", rank_value, None))
+        if CB_Rank is not None:
+            requested_items.append(
+                (
+                    "rank",
+                    self._coerce_positive_rank(CB_Rank, param_name="CB_Rank"),
+                    None,
+                )
+            )
 
         if not requested_items:
-            raise ValueError("Please provide at least one CB in `CBs` and/or `CB_IDs`.")
+            raise ValueError(
+                "Please provide at least one CB selector via CBs, CB_IDs, CB_Rank, or CB_Ranks."
+            )
 
+        # Deduplicate by player ID so overlapping selectors (e.g., name + rank
+        # pointing to the same CB) do not create duplicate highlighted traces.
         used_ids = set()
-        for cb_name, cb_id in requested_items:
-            selected_cb = self._resolve_single_cb(plot_df, CB=cb_name, CB_ID=cb_id)
+        for selection_mode, cb_name_or_rank, cb_id in requested_items:
+            if selection_mode == "rank":
+                selected_cb = self._resolve_single_cb(
+                    plot_df,
+                    CB_Rank=cb_name_or_rank,
+                )
+            else:
+                selected_cb = self._resolve_single_cb(
+                    plot_df,
+                    CB=cb_name_or_rank,
+                    CB_ID=cb_id,
+                )
             cb_unique_id = selected_cb["player.id"]
             if cb_unique_id in used_ids:
                 continue
@@ -4413,7 +4604,7 @@ class Single_CB_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolv
 
 class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver):
     """
-    Build Ground-Duels distribution plots for CB-pair analyses.
+    Build Aerial-Duels distribution plots for CB-pair analyses.
 
     By default, CB-pair plots are split into two side-by-side figures:
     1. Fit/composition metrics (left)
@@ -4424,10 +4615,10 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
     """
 
     DEFAULT_PAIR_METRIC_LABELS = {
-        "z_duels_per90": "Ground Duels per-90",
+        "z_duels_per90": "Aerial Duels per-90",
         "z_card_discipline": "Card Discipline",
         "z_discipline": "Discipline",
-        "z_interceptions_per90": "Interceptions per-90",
+        "z_aerial_wins_per90": "Aerial Wins per-90",
         "z_duel_success_rate": "Duel Success Rate",
         "z_possession_win_rate": "Possession Win Rate",
         "floor_z": "CB-Pair Weak-Link (i.e. Floor) Protection",
@@ -4435,7 +4626,7 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         "quality_z": "CB-Pair Weighted Avg. Quality",
         "CB_pair_fit_z_score": "CB-Pair (Overall) Fit Score",
         "CB_pair_fit_rank_z_score": "CB-Pair Fit Ranking (Within This Sample)",
-        "CB_pair_fit_rank": "CB-Pair Fit Ranking (Within This Sample)",
+        "CB_pair_fit_rank": "CB-Pair Fit Ranking (Within This Sample)"
     }
 
 
@@ -4443,14 +4634,14 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         "z_duels_per90": "duels_per90",
         "z_card_discipline": "card_discipline",
         "z_discipline": "discipline",
-        "z_interceptions_per90": "interceptions_per90",
+        "z_aerial_wins_per90": "aerial_wins_per90",
         "z_duel_success_rate": "duel_success_rate",
         "z_possession_win_rate": "possession_win_rate",
         "floor_z": "floor_raw",
         "complement_z": "complement_raw",
         "quality_z": "quality_raw",
-        "CB_pair_fit_z_score": None,
-        "CB_pair_fit_rank_z_score": "CB_pair_fit_rank",
+        "CB_pair_fit_z_score": None,  # No separate raw column for the CB-pair overall fit score, as it's a composite metric derived from the quality_z, complement_z, and floor_z components, so we just use the z-score column for both the value and the label in this case - no raw value or label in the plot's tooltip.
+        "CB_pair_fit_rank_z_score": "CB_pair_fit_rank"    # we can show the raw rank value in the hover tooltip for context, even though the x-axis position is based on the z-scored rank (where higher is better fit)
     }
 
 
@@ -4467,7 +4658,7 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         "z_duels_per90",
         "z_card_discipline",
         "z_discipline",
-        "z_interceptions_per90",
+        "z_aerial_wins_per90",
         "z_duel_success_rate",
         "z_possession_win_rate",
     ]
@@ -4476,12 +4667,14 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
 
 
     RANK_Z_SCALE = 2.5
+    RAW_RANK_COLUMN = "CB_pair_fit_rank"
 
 
     def __init__(
         self,
         *,
-        df_ground_duel_pairs: pd.DataFrame,
+        df_aerial_duel_pairs: Optional[pd.DataFrame] = None,
+        df_ground_duel_pairs: Optional[pd.DataFrame] = None,
         plot_metric_cols: Optional[Sequence[str]] = None,
         pair_metric_labels: Optional[Mapping[str, str]] = None,
         pair_metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
@@ -4492,7 +4685,8 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
     ) -> None:
         """
         Args:
-            df_ground_duel_pairs: CB-pair dataframe used for plotting.
+            df_aerial_duel_pairs: Canonical Aerial-Duels CB-pair dataframe used for plotting.
+            df_ground_duel_pairs: Backward-compatible alias for legacy call sites.
             plot_metric_cols: Optional legacy single-view metric list.
             pair_metric_labels: Optional constructor-level label map.
             pair_metric_value_columns: Optional constructor-level raw-value map.
@@ -4501,7 +4695,25 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
             min_num_duels_involved_in_threshold: Threshold shown in subtitles.
             min_minutes_played_threshold: Threshold shown in subtitles.
         """
-        self.df_ground_duel_pairs = df_ground_duel_pairs
+        if df_aerial_duel_pairs is None and df_ground_duel_pairs is None:
+            raise ValueError(
+                "Please provide `df_aerial_duel_pairs` (preferred) or "
+                "`df_ground_duel_pairs` (legacy alias)."
+            )
+        if df_aerial_duel_pairs is not None and df_ground_duel_pairs is not None:
+            raise ValueError(
+                "Provide only one of `df_aerial_duel_pairs` or `df_ground_duel_pairs`, not both."
+            )
+
+        resolved_pair_df = (
+            df_aerial_duel_pairs
+            if df_aerial_duel_pairs is not None
+            else df_ground_duel_pairs
+        )
+        self.df_aerial_duel_pairs = resolved_pair_df
+        # Legacy alias kept for backward compatibility with any external call
+        # sites that still reference the old attribute name.
+        self.df_ground_duel_pairs = resolved_pair_df
         self._configured_plot_metric_cols = (
             list(plot_metric_cols) if plot_metric_cols is not None else None
         )
@@ -4631,7 +4843,7 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         """
         Prepare the CB-pair dataframe and inject hover payload columns.
         """
-        plot_df = self.df_ground_duel_pairs.copy()
+        plot_df = self.df_aerial_duel_pairs.copy()
         self._ensure_columns(
             plot_df,
             ["pair_name", "CB_pair_fit_z_score"],
@@ -4681,13 +4893,13 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
             quality_metric_labels=dict(metric_labels),
             quality_metric_value_columns=dict(metric_value_columns),
         )
-        title = "CB-Pair Ground Duels Quality Fit Distribution"
+        title = "CB-Pair Aerial Duels Quality Fit Distribution"
         if section_title:
             title = f"{title} ({section_title})"
         dist_plot.add_title(
             title=title,
             subtitle=(
-                f"All {len(self.df_ground_duel_pairs)} unordered CB pairs, with ≥ {self.min_num_duels_involved_in_threshold} duels & playing time ≥ {self.min_minutes_played_threshold} minutes (each individual CB)"
+                f"All {len(self.df_aerial_duel_pairs)} unordered CB pairs, with ≥ {self.min_num_duels_involved_in_threshold} duels & playing time ≥ {self.min_minutes_played_threshold} minutes (each individual CB)"
                 "<br>"
                 "All metrics are CB-Pair-level (i.e. the weighted average of both players for that metric)"
             ),
@@ -4795,6 +5007,30 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
             )
         return matches.iloc[0]
 
+    def _resolve_pair_row_by_rank(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        CB_Pair_Rank: Any,
+    ) -> pd.Series:
+        """
+        Resolve one CB-pair row by its raw fit-ranking value.
+
+        Args:
+            plot_df: Prepared CB-pair plotting dataframe.
+            CB_Pair_Rank: Requested pair rank in `CB_pair_fit_rank`.
+
+        Returns:
+            One resolved pair row for the requested rank.
+        """
+        return self._resolve_row_by_rank(
+            plot_df,
+            rank_column=self.RAW_RANK_COLUMN,
+            rank_value=CB_Pair_Rank,
+            entity_label="CB pair",
+            display_column="pair_name",
+        )
+
     def _pair_key(self, row: pd.Series) -> str:
         """
         Build a stable deduplication key for a pair-like row.
@@ -4890,24 +5126,43 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         CB_2: Any = None,
         CB_1_ID: Any = None,
         CB_2_ID: Any = None,
+        CB_Pair_Rank: Optional[int] = None,
         include_best: bool = True,
         include_worst: bool = False,
         include_average: bool = False,
     ) -> List[Tuple[pd.Series, str, bool]]:
         """
         Resolve highlighted rows for a single CB-pair plot scenario.
+
+        A pair can be selected either by identity selectors (`CB_Pair` or
+        `CB_1`/`CB_2`) or by `CB_Pair_Rank`.
         """
         highlighted_rows: List[Tuple[pd.Series, str, bool]] = []
         used_keys = set()
 
-        selected_pair = self._resolve_pair_row(
-            plot_df,
-            CB_Pair=CB_Pair,
-            CB_1=CB_1,
-            CB_2=CB_2,
-            CB_1_ID=CB_1_ID,
-            CB_2_ID=CB_2_ID,
-        )
+        # In single-pair mode, rank-based selection and identity-based selection
+        # are intentionally mutually exclusive to keep intent unambiguous.
+        if CB_Pair_Rank is not None and any(
+            value is not None for value in [CB_Pair, CB_1, CB_2, CB_1_ID, CB_2_ID]
+        ):
+            raise ValueError(
+                "Please provide either CB_Pair_Rank or CB_Pair/CB_1/CB_2 selectors, not both."
+            )
+
+        if CB_Pair_Rank is not None:
+            selected_pair = self._resolve_pair_row_by_rank(
+                plot_df,
+                CB_Pair_Rank=CB_Pair_Rank,
+            )
+        else:
+            selected_pair = self._resolve_pair_row(
+                plot_df,
+                CB_Pair=CB_Pair,
+                CB_1=CB_1,
+                CB_2=CB_2,
+                CB_1_ID=CB_1_ID,
+                CB_2_ID=CB_2_ID,
+            )
         if selected_pair is not None:
             selected_key = self._pair_key(selected_pair)
             used_keys.add(selected_key)
@@ -4950,12 +5205,17 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         metric_labels: Mapping[str, str],
         metric_value_columns: Mapping[str, Optional[str]],
         CB_Pairs: Optional[Sequence[Union[str, Sequence[Any], Dict[str, Any]]]] = None,
+        CB_Pair_Rank: Optional[int] = None,
+        CB_Pair_Ranks: Optional[Sequence[int]] = None,
         include_best: bool = False,
         include_worst: bool = False,
         include_average: bool = False,
     ) -> List[Tuple[pd.Series, str, bool]]:
         """
         Resolve highlighted rows for CB-pair comparison plots.
+
+        Comparison selectors can include explicit pair identities and/or raw
+        ranking selectors (`CB_Pair_Rank`, `CB_Pair_Ranks`).
         """
         specs: List[Dict[str, Any]] = []
         for item in (CB_Pairs or []):
@@ -4970,24 +5230,53 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
                     "Each item in CB_Pairs must be either a pair string, a tuple/list of length 2, or a dict with CB_1/CB_2."
                 )
 
+        # Rank-based pair selection is additive in comparison mode.
+        # It can be used alone or combined with explicit pair selectors.
+        if CB_Pair_Ranks is not None:
+            if CB_Pair_Rank is not None:
+                raise ValueError(
+                    "Please provide either CB_Pair_Rank or CB_Pair_Ranks, not both."
+                )
+            for rank_value in self._coerce_unique_positive_ranks(
+                CB_Pair_Ranks,
+                param_name="CB_Pair_Ranks",
+            ):
+                specs.append({"CB_Pair_Rank": rank_value})
+        if CB_Pair_Rank is not None:
+            specs.append(
+                {
+                    "CB_Pair_Rank": self._coerce_positive_rank(
+                        CB_Pair_Rank,
+                        param_name="CB_Pair_Rank",
+                    )
+                }
+            )
+
         if not specs and not any([include_best, include_worst, include_average]):
             raise ValueError(
-                "Please provide CB_Pairs and/or enable at least one of include_best/include_worst/include_average."
+                "Please provide at least one pair selector via CB_Pairs, CB_Pair_Rank, or CB_Pair_Ranks; "
+                "or enable at least one of include_best/include_worst/include_average."
             )
 
         highlighted_rows: List[Tuple[pd.Series, str, bool]] = []
         used_keys = set()
         for spec in specs:
-            selected_pair = self._resolve_pair_row(
-                plot_df,
-                CB_Pair=spec.get("CB_Pair"),
-                CB_1=spec.get("CB_1"),
-                CB_2=spec.get("CB_2"),
-                CB_1_ID=spec.get("CB_1_ID"),
-                CB_2_ID=spec.get("CB_2_ID"),
-            )
-            if selected_pair is None:
-                continue
+            if spec.get("CB_Pair_Rank") is not None:
+                selected_pair = self._resolve_pair_row_by_rank(
+                    plot_df,
+                    CB_Pair_Rank=spec.get("CB_Pair_Rank"),
+                )
+            else:
+                selected_pair = self._resolve_pair_row(
+                    plot_df,
+                    CB_Pair=spec.get("CB_Pair"),
+                    CB_1=spec.get("CB_1"),
+                    CB_2=spec.get("CB_2"),
+                    CB_1_ID=spec.get("CB_1_ID"),
+                    CB_2_ID=spec.get("CB_2_ID"),
+                )
+                if selected_pair is None:
+                    continue
 
             key = self._pair_key(selected_pair)
             if key in used_keys:
@@ -5032,6 +5321,7 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         CB_2: Any = None,
         CB_1_ID: Any = None,
         CB_2_ID: Any = None,
+        CB_Pair_Rank: Optional[int] = None,
         include_best: bool = True,
         include_worst: bool = False,
         include_average: bool = False,
@@ -5046,6 +5336,10 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
     ) -> Union[DistributionPlot, Tuple[DistributionPlot, DistributionPlot]]:
         """
         Plot one selected CB-pair (optional) plus optional best/worst/average references.
+
+        Selection options:
+        - `CB_Pair` / `CB_1` + `CB_2` (with optional IDs),
+        - `CB_Pair_Rank` (raw pair-fit ranking value).
         """
         cfg = self._resolve_pair_metric_configs(
             split_view=split_view,
@@ -5071,6 +5365,7 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
             CB_2=CB_2,
             CB_1_ID=CB_1_ID,
             CB_2_ID=CB_2_ID,
+            CB_Pair_Rank=CB_Pair_Rank,
             include_best=include_best,
             include_worst=include_worst,
             include_average=include_average,
@@ -5127,6 +5422,8 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         self,
         *,
         CB_Pairs: Optional[Sequence[Union[str, Sequence[Any], Dict[str, Any]]]] = None,
+        CB_Pair_Rank: Optional[int] = None,
+        CB_Pair_Ranks: Optional[Sequence[int]] = None,
         include_best: bool = False,
         include_worst: bool = False,
         include_average: bool = False,
@@ -5141,6 +5438,10 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
     ) -> Union[DistributionPlot, Tuple[DistributionPlot, DistributionPlot]]:
         """
         Compare multiple user-selected CB-pairs plus optional best/worst/average overlays.
+
+        Pair selection supports:
+        - explicit pair selectors (`CB_Pairs`),
+        - rank selectors (`CB_Pair_Rank`, `CB_Pair_Ranks`).
         """
         cfg = self._resolve_pair_metric_configs(
             split_view=split_view,
@@ -5162,6 +5463,8 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
             metric_labels=combined_labels,
             metric_value_columns=combined_values,
             CB_Pairs=CB_Pairs,
+            CB_Pair_Rank=CB_Pair_Rank,
+            CB_Pair_Ranks=CB_Pair_Ranks,
             include_best=include_best,
             include_worst=include_worst,
             include_average=include_average,
@@ -5217,7 +5520,7 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
 
 class Anchor_CB_Companion_Fit_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver):
     """
-    Build directional anchor-to-companion Ground-Duels distribution plots.
+    Build directional anchor-to-companion Aerial-Duels distribution plots.
 
     The class includes default companion-fit metrics/labels/raw mappings but still
     supports constructor-level and per-call metric overrides.
@@ -5246,19 +5549,46 @@ class Anchor_CB_Companion_Fit_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distr
     def __init__(
         self,
         *,
-        df_ground_duel_companion_fit: pd.DataFrame,
+        df_aerial_duel_companion_fit: Optional[pd.DataFrame] = None,
+        df_ground_duel_companion_fit: Optional[pd.DataFrame] = None,
         companion_plot_metric_cols: Optional[Sequence[str]] = None,
         companion_metric_labels: Optional[Mapping[str, str]] = None,
         companion_metric_value_columns: Optional[Mapping[str, Optional[str]]] = None,
     ) -> None:
         """
         Args:
-            df_ground_duel_companion_fit: Directional anchor-to-partner fit dataframe.
+            df_aerial_duel_companion_fit: Canonical Aerial-Duels directional anchor-to-partner fit dataframe.
+            df_ground_duel_companion_fit: Backward-compatible alias for legacy call sites.
             companion_plot_metric_cols: Optional constructor-level metric list.
             companion_metric_labels: Optional constructor-level label map.
             companion_metric_value_columns: Optional constructor-level raw-value map.
         """
-        self.df_ground_duel_companion_fit = df_ground_duel_companion_fit
+        if (
+            df_aerial_duel_companion_fit is None
+            and df_ground_duel_companion_fit is None
+        ):
+            raise ValueError(
+                "Please provide `df_aerial_duel_companion_fit` (preferred) or "
+                "`df_ground_duel_companion_fit` (legacy alias)."
+            )
+        if (
+            df_aerial_duel_companion_fit is not None
+            and df_ground_duel_companion_fit is not None
+        ):
+            raise ValueError(
+                "Provide only one of `df_aerial_duel_companion_fit` or "
+                "`df_ground_duel_companion_fit`, not both."
+            )
+
+        resolved_companion_df = (
+            df_aerial_duel_companion_fit
+            if df_aerial_duel_companion_fit is not None
+            else df_ground_duel_companion_fit
+        )
+        self.df_aerial_duel_companion_fit = resolved_companion_df
+        # Legacy alias kept for backward compatibility with any external call
+        # sites that still reference the old attribute name.
+        self.df_ground_duel_companion_fit = resolved_companion_df
         self._configured_companion_plot_metric_cols = (
             list(companion_plot_metric_cols)
             if companion_plot_metric_cols is not None
@@ -5309,16 +5639,16 @@ class Anchor_CB_Companion_Fit_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distr
             If IDs are unavailable in source data, synthetic IDs are generated.
         """
         self._ensure_columns(
-            self.df_ground_duel_companion_fit,
+            self.df_aerial_duel_companion_fit,
             ["anchor_player_name"],
             "companion-fit anchor resolution",
         )
-        if "anchor_player_id" in self.df_ground_duel_companion_fit.columns:
-            return self.df_ground_duel_companion_fit[
+        if "anchor_player_id" in self.df_aerial_duel_companion_fit.columns:
+            return self.df_aerial_duel_companion_fit[
                 ["anchor_player_id", "anchor_player_name"]
             ].drop_duplicates()
 
-        candidates = self.df_ground_duel_companion_fit[["anchor_player_name"]].drop_duplicates().copy()
+        candidates = self.df_aerial_duel_companion_fit[["anchor_player_name"]].drop_duplicates().copy()
         candidates["anchor_player_id"] = np.arange(len(candidates))
         return candidates
 
@@ -5345,7 +5675,7 @@ class Anchor_CB_Companion_Fit_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distr
 
         if (
             Anchor_CB_ID is not None
-            and "anchor_player_id" not in self.df_ground_duel_companion_fit.columns
+            and "anchor_player_id" not in self.df_aerial_duel_companion_fit.columns
         ):
             raise ValueError(
                 "Anchor_CB_ID was provided, but `anchor_player_id` is not available in the companion dataframe."
@@ -5382,7 +5712,7 @@ class Anchor_CB_Companion_Fit_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distr
         """
         Build anchor-filtered companion-fit dataframe and attach hover payloads.
         """
-        plot_df = self.df_ground_duel_companion_fit.copy()
+        plot_df = self.df_aerial_duel_companion_fit.copy()
         self._ensure_columns(
             plot_df,
             ["anchor_player_name", "partner_player_name", "companion_fit_score"],
@@ -5599,7 +5929,7 @@ class Anchor_CB_Companion_Fit_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distr
             quality_metric_value_columns=dict(metric_value_columns),
         )
         dist_plot.add_title(
-            title=f"CB-Companion Ground Duels Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
+            title=f"CB-Companion Aerial Duels Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
             subtitle=(
                 f"All {num_candidates} potential companions for {anchor_name} (directional A → B)"
                 "<br>"
