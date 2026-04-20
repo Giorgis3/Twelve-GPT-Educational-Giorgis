@@ -11,23 +11,29 @@ This module is the central visualization layer for analysis notebooks and app vi
 
 3. **Ground-Duels analysis suites**:
    Higher-level APIs that translate football analysis dataframes into ready-to-render distribution plots for:
-   - single CB quality,
-   - CB pair quality-fit,
-   - anchor-to-companion fit (directional).
+    - single CB quality,
+    - CB pair quality-fit,
+    - anchor-to-companion fit (directional).
 
 4. **Aerial-Duels analysis suites**:
    Higher-level APIs that translate football analysis dataframes into ready-to-render distribution plots for:
-   - single CB quality,
-   - CB pair quality-fit,
-   - anchor-to-companion fit (directional).
+    - single CB quality,
+    - CB pair quality-fit,
+    - anchor-to-companion fit (directional).
 
 5. **Ball-Passing analysis suites**:
    Higher-level APIs that translate football analysis dataframes into ready-to-render distribution plots for:
-   - single CB quality,
-   - CB pair quality-fit,
-   - anchor-to-companion fit (directional).
+    - single CB quality,
+    - CB pair quality-fit,
+    - anchor-to-companion fit (directional).
 
-6. **Personality plotting component**:
+6. **Global Quality analysis & Radar plots**:
+   Higher-level APIs that translate football analysis dataframes into ready-to-render radar distribution plots for:
+    - single CB quality,
+    - CB pair quality-fit.
+    - anchor-to-companion fit (directional).
+
+7. **Personality plotting component**:
    Specialized distribution view for personality-based metrics.
 
 Design goals:
@@ -44,6 +50,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 import plotly.io as pio
+from plotly.subplots import make_subplots
 import numpy as np
 import pandas as pd
 import re
@@ -9022,12 +9029,14 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
         global_score_column: str,
         global_rank_column: str,
         global_rank_z_column: Optional[str] = None,
-    ) -> Tuple[List[float], List[str]]:
+    ) -> Tuple[List[float], List[float], List[str], List[str]]:
         """
-        Build axis values and axis-specific hover text for one radar trace.
+        Build axis values and hover payloads for both score and raw-rank radars.
         """
         axis_values: List[float] = []
-        axis_hover_lines: List[str] = []
+        axis_rank_values: List[float] = []
+        axis_hover_score_lines: List[str] = []
+        axis_hover_rank_lines: List[str] = []
 
         global_score = row.get(global_score_column, float("nan"))
         global_rank = row.get(global_rank_column, float("nan"))
@@ -9044,69 +9053,175 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
 
             axis_value = row.get(value_col, float("nan"))
             axis_values.append(float(axis_value) if pd.notna(axis_value) else float("nan"))
+            axis_rank = row.get(rank_col, float("nan")) if rank_col is not None else float("nan")
+            axis_rank_values.append(float(axis_rank) if pd.notna(axis_rank) else float("nan"))
 
-            hover_lines = [
+            score_hover_lines = [
                 axis,
                 f"Axis Quality Score (Z) = {cls._format_float(axis_value)}",
             ]
             if rank_col is not None:
-                hover_lines.append(
+                score_hover_lines.append(
                     f"Axis Quality Rank = {cls._format_rank(row.get(rank_col, float('nan')))}"
                 )
             if rank_z_col is not None:
-                hover_lines.append(
+                score_hover_lines.append(
                     f"Axis Quality Rank Z-score = {cls._format_float(row.get(rank_z_col, float('nan')))}"
                 )
 
-            hover_lines.extend(
+            score_hover_lines.extend(
                 [
                     f"Global Quality Score = {cls._format_float(global_score)}",
                     f"Global Quality Rank = {cls._format_rank(global_rank)}",
                 ]
             )
             if global_rank_z_column is not None:
-                hover_lines.append(
+                score_hover_lines.append(
                     f"Global Quality Rank Z-score = {cls._format_float(global_rank_z)}"
                 )
 
-            axis_hover_lines.append("<br>".join(hover_lines))
+            rank_hover_lines = [
+                axis,
+                f"Axis Quality Rank = {cls._format_rank(axis_rank)}",
+                f"Axis Quality Score (Z) = {cls._format_float(axis_value)}",
+            ]
+            if rank_z_col is not None:
+                rank_hover_lines.append(
+                    f"Axis Quality Rank Z-score = {cls._format_float(row.get(rank_z_col, float('nan')))}"
+                )
+            rank_hover_lines.extend(
+                [
+                    f"Global Quality Rank = {cls._format_rank(global_rank)}",
+                    f"Global Quality Score = {cls._format_float(global_score)}",
+                ]
+            )
+            if global_rank_z_column is not None:
+                rank_hover_lines.append(
+                    f"Global Quality Rank Z-score = {cls._format_float(global_rank_z)}"
+                )
 
-        return axis_values, axis_hover_lines
+            axis_hover_score_lines.append("<br>".join(score_hover_lines))
+            axis_hover_rank_lines.append("<br>".join(rank_hover_lines))
+
+        return (
+            axis_values,
+            axis_rank_values,
+            axis_hover_score_lines,
+            axis_hover_rank_lines,
+        )
 
     @classmethod
-    def _create_radar_figure(
+    def _resolve_rank_radial_range(
+        cls,
+        values: Sequence[Any],
+    ) -> Tuple[float, float]:
+        """
+        Build the rank-based radial range for the left-side radar.
+        """
+        clean_values: List[float] = []
+        for raw_value in values:
+            numeric_value = cls._to_number_or_none(raw_value)
+            if numeric_value is not None and numeric_value > 0:
+                clean_values.append(float(numeric_value))
+
+        if not clean_values:
+            return (1.0, 5.0)
+
+        upper = float(np.ceil(max(clean_values)))
+        upper = max(upper, 5.0)
+        return (1.0, upper)
+
+    @classmethod
+    def _build_rank_ticks(
+        cls,
+        *,
+        rank_range: Tuple[float, float],
+    ) -> Tuple[List[float], List[str]]:
+        """
+        Create readable raw-rank ticks for the left radar axis.
+        """
+        rank_min, rank_max = rank_range
+        max_rank = int(max(2, np.ceil(rank_max)))
+
+        if max_rank <= 6:
+            tick_values = list(range(1, max_rank + 1))
+        else:
+            tick_values = sorted(
+                {
+                    1,
+                    max_rank,
+                    int(round(max_rank * 0.25)),
+                    int(round(max_rank * 0.50)),
+                    int(round(max_rank * 0.75)),
+                }
+            )
+            tick_values = [max(1, min(max_rank, tick)) for tick in tick_values]
+            tick_values = sorted(set(tick_values))
+
+        return [float(tick) for tick in tick_values], [f"#{tick}" for tick in tick_values]
+
+    @classmethod
+    def _create_dual_radar_figure(
         cls,
         *,
         title: str,
         subtitle: str,
-        radial_range: Tuple[float, float],
+        score_radial_range: Tuple[float, float],
+        rank_radial_range: Tuple[float, float],
     ) -> go.Figure:
         """
-        Instantiate a radar figure with project-consistent styling.
+        Instantiate a two-panel radar figure:
+        - left: raw rank positioning per axis,
+        - right: z-score profile with qualitative radial labels.
         """
-        fig = go.Figure()
+        rank_tick_values, rank_tick_text = cls._build_rank_ticks(
+            rank_range=rank_radial_range,
+        )
+        score_midpoint = (
+            0.0
+            if score_radial_range[0] <= 0.0 <= score_radial_range[1]
+            else float(np.mean(score_radial_range))
+        )
+        # Reserve vertical space between subplot titles and each radar panel.
+        polar_domain_y = [0.02, 1.0]
+        subplot_title_y = 1.075
+
+        fig = make_subplots(
+            rows=1,
+            cols=2,
+            specs=[[{"type": "polar"}, {"type": "polar"}]],
+            horizontal_spacing=0.00,
+            subplot_titles=(
+                "Global Quality Ranking",
+                "Global Quality Score Profile",
+            ),
+        )
+
         fig.update_layout(
             autosize=True,
             height=560,
-            margin=dict(l=60, r=60, b=95, t=110, pad=16),
+            margin=dict(l=60, r=60, b=95, t=120, pad=16),
             paper_bgcolor=rgb_to_color(Visual.dark_green),
             plot_bgcolor=rgb_to_color(Visual.dark_green),
             polar=dict(
                 bgcolor=rgb_to_color(Visual.dark_green),
+                domain=dict(y=polar_domain_y),
                 radialaxis=dict(
                     visible=True,
-                    range=[radial_range[0], radial_range[1]],
-                    # range = ["←   Worse", "Avg.", "Better   →"],
+                    range=[rank_radial_range[0], rank_radial_range[1]],
+                    autorange="reversed",
                     gridcolor=rgb_to_color(Visual.plot_grid_green, 0.75),
                     linecolor=rgb_to_color(Visual.white, 0.75),
                     angle=90,
+                    tickmode="array",
+                    tickvals=rank_tick_values,
+                    ticktext=rank_tick_text,
                     tickfont={
                         "color": rgb_to_color(Visual.white, 0.75),
                         "family": "Gilroy-Light",
                         "size": 11,
                     },
-                    tickformat=".2f",
-                    tickcolor = rgb_to_color(Visual.white, 0.75),
+                    tickcolor=rgb_to_color(Visual.white, 0.75),
                     tickangle=90,
                 ),
                 angularaxis=dict(
@@ -9117,7 +9232,42 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
                         "family": "Gilroy-Medium",
                         "size": 12,
                     },
-                    tickcolor = rgb_to_color(Visual.white, 0.75),
+                    tickcolor=rgb_to_color(Visual.white, 0.75),
+                ),
+            ),
+            polar2=dict(
+                bgcolor=rgb_to_color(Visual.dark_green),
+                domain=dict(y=polar_domain_y),
+                radialaxis=dict(
+                    visible=True,
+                    range=[score_radial_range[0], score_radial_range[1]],
+                    gridcolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    linecolor=rgb_to_color(Visual.white, 0.75),
+                    angle=90,
+                    tickmode="array",
+                    tickvals=[
+                        float(score_radial_range[0]),
+                        float(score_midpoint),
+                        float(score_radial_range[1]),
+                    ],
+                    ticktext=["Worse   ↓", "Avg.", "Better   ↑"],
+                    tickfont={
+                        "color": rgb_to_color(Visual.white, 0.80),
+                        "family": "Gilroy-Light",
+                        "size": 11,
+                    },
+                    tickcolor=rgb_to_color(Visual.white, 0.75),
+                    tickangle=90,
+                ),
+                angularaxis=dict(
+                    gridcolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    linecolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    tickfont={
+                        "color": rgb_to_color(Visual.white, 0.9),
+                        "family": "Gilroy-Medium",
+                        "size": 12,
+                    },
+                    tickcolor=rgb_to_color(Visual.white, 0.75),
                 ),
             ),
             legend=dict(
@@ -9129,11 +9279,15 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
                 },
                 itemclick="toggle",
                 itemdoubleclick=False,
+                # itemclickside="toggle",
+                # itemclicklegend="toggle",
+                # itemclickgroup="toggle",
                 x=0.5,
                 xanchor="center",
                 y=-0.20,
                 yanchor="bottom",
             ),
+            font={"color": rgb_to_color(Visual.white)},
             title={
                 "text": (
                     f"<span style='font-size: 16px'>{title}</span>"
@@ -9150,6 +9304,19 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
                 "yanchor": "top",
             },
         )
+        fig.update_annotations(
+            font={
+                "color": rgb_to_color(Visual.white),
+                "family": "Gilroy-Medium",
+                "size": 12,
+            }
+        )
+        # Keep subplot titles clearly separated from the radar circles.
+        for annotation in fig.layout.annotations:
+            annotation.update(
+                y=subplot_title_y,
+                yanchor="bottom",
+            )
         return fig
 
     @classmethod
@@ -9165,6 +9332,9 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
         fill_opacity: float = 0.18,
         line_width: float = 2.25,
         marker_size: int = 8,
+        subplot_ref: str = "polar",
+        showlegend: bool = True,
+        legendgroup: Optional[str] = None,
     ) -> None:
         """
         Add one closed radar trace (line + markers + translucent fill).
@@ -9196,6 +9366,9 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
                 fillcolor=rgb_to_color(color_rgb, fill_opacity),
                 text=hover_values,
                 hovertemplate="%{text}<extra>%{fullData.name}</extra>",
+                subplot=subplot_ref,
+                showlegend=showlegend,
+                legendgroup=legendgroup,
             )
         )
 
@@ -9208,34 +9381,57 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
         subtitle: str,
         radial_range: Optional[Sequence[float]] = None,
         show: bool = True,
-    ) -> go.Figure:
+    ) -> Optional[go.Figure]:
         """
-        Render multiple profile dictionaries into one radar figure.
+        Render profile dictionaries into a two-panel radar figure.
 
         Each profile dictionary must contain:
         - `axis_values`: length-3 list aligned to `AXIS_ORDER`,
+        - `axis_rank_values`: raw-rank values aligned to `AXIS_ORDER`,
         - `axis_hover`: length-3 list aligned to `AXIS_ORDER`,
+        - `axis_rank_hover`: length-3 list aligned to `AXIS_ORDER`,
         - `trace_name`: legend label,
         - `color_rgb`: RGB tuple.
         """
         if not profiles:
             raise ValueError("At least one profile is required to render a radar plot.")
 
-        pooled_values: List[Any] = []
+        pooled_score_values: List[Any] = []
+        pooled_rank_values: List[Any] = []
         for profile in profiles:
-            pooled_values.extend(profile["axis_values"])
+            pooled_score_values.extend(profile["axis_values"])
+            pooled_rank_values.extend(profile["axis_rank_values"])
 
-        resolved_range = cls._resolve_radial_range(
-            pooled_values,
+        resolved_score_range = cls._resolve_radial_range(
+            pooled_score_values,
             radial_range=radial_range,
         )
-        fig = cls._create_radar_figure(
+        resolved_rank_range = cls._resolve_rank_radial_range(pooled_rank_values)
+
+        fig = cls._create_dual_radar_figure(
             title=title,
             subtitle=subtitle,
-            radial_range=resolved_range,
+            score_radial_range=resolved_score_range,
+            rank_radial_range=resolved_rank_range,
         )
 
-        for profile in profiles:
+        for index, profile in enumerate(profiles):
+            legend_group = f"profile_{index}"
+
+            cls._add_radar_trace(
+                fig,
+                axis_values=profile["axis_rank_values"],
+                axis_hover=profile["axis_rank_hover"],
+                trace_name=profile["trace_name"],
+                color_rgb=profile["color_rgb"],
+                line_dash=profile.get("line_dash", "solid"),
+                fill_opacity=profile.get("fill_opacity", 0.18),
+                line_width=profile.get("line_width", 2.4),
+                marker_size=profile.get("marker_size", 8),
+                subplot_ref="polar",
+                showlegend=False,
+                legendgroup=legend_group,
+            )
             cls._add_radar_trace(
                 fig,
                 axis_values=profile["axis_values"],
@@ -9246,10 +9442,14 @@ class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
                 fill_opacity=profile.get("fill_opacity", 0.18),
                 line_width=profile.get("line_width", 2.4),
                 marker_size=profile.get("marker_size", 8),
+                subplot_ref="polar2",
+                showlegend=True,
+                legendgroup=legend_group,
             )
 
         if show:
             fig.show()
+            return None
         return fig
 
 
@@ -9423,7 +9623,12 @@ class Single_CB_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
         """
         Build one plotting profile dictionary for `_plot_profiles`.
         """
-        axis_values, axis_hover = self._build_axis_hover_lines(
+        (
+            axis_values,
+            axis_rank_values,
+            axis_hover,
+            axis_rank_hover,
+        ) = self._build_axis_hover_lines(
             row=row,
             axis_value_columns=self.axis_value_columns,
             axis_rank_columns=self.axis_rank_columns,
@@ -9434,7 +9639,9 @@ class Single_CB_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
         )
         return {
             "axis_values": axis_values,
+            "axis_rank_values": axis_rank_values,
             "axis_hover": axis_hover,
+            "axis_rank_hover": axis_rank_hover,
             "trace_name": trace_name,
             "color_rgb": color_rgb,
             "line_dash": line_dash,
@@ -9476,7 +9683,7 @@ class Single_CB_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
         include_league_average: bool = True,
         radial_range: Optional[Sequence[float]] = None,
         show: bool = True,
-    ) -> go.Figure:
+    ) -> Optional[go.Figure]:
         """
         Plot one selected CB on the global 3-quality radar.
 
@@ -9590,7 +9797,7 @@ class Single_CB_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
         include_league_average: bool = True,
         radial_range: Optional[Sequence[float]] = None,
         show: bool = True,
-    ) -> go.Figure:
+    ) -> Optional[go.Figure]:
         """
         Compare multiple CBs on a shared global 3-axis radar.
 
@@ -9944,7 +10151,12 @@ class CB_Pair_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
         line_dash: str = "solid",
         fill_opacity: float = 0.18,
     ) -> Dict[str, Any]:
-        axis_values, axis_hover = self._build_axis_hover_lines(
+        (
+            axis_values,
+            axis_rank_values,
+            axis_hover,
+            axis_rank_hover,
+        ) = self._build_axis_hover_lines(
             row=row,
             axis_value_columns=self.axis_value_columns,
             axis_rank_columns=self.axis_rank_columns,
@@ -9955,7 +10167,9 @@ class CB_Pair_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
         )
         return {
             "axis_values": axis_values,
+            "axis_rank_values": axis_rank_values,
             "axis_hover": axis_hover,
+            "axis_rank_hover": axis_rank_hover,
             "trace_name": trace_name,
             "color_rgb": color_rgb,
             "line_dash": line_dash,
@@ -9995,7 +10209,7 @@ class CB_Pair_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
         include_average: bool = False,
         radial_range: Optional[Sequence[float]] = None,
         show: bool = True,
-    ) -> go.Figure:
+    ) -> Optional[go.Figure]:
         """
         Plot one selected CB pair on the global 3-quality radar.
         """
@@ -10117,7 +10331,7 @@ class CB_Pair_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
         include_average: bool = False,
         radial_range: Optional[Sequence[float]] = None,
         show: bool = True,
-    ) -> go.Figure:
+    ) -> Optional[go.Figure]:
         """
         Compare multiple CB pairs on one global 3-axis radar.
         """
@@ -10528,7 +10742,12 @@ class Anchor_CB_Companion_Fit_Global_Qualities_Radar_Plot(_Global_Qualities_Rada
         line_dash: str = "solid",
         fill_opacity: float = 0.18,
     ) -> Dict[str, Any]:
-        axis_values, axis_hover = self._build_axis_hover_lines(
+        (
+            axis_values,
+            axis_rank_values,
+            axis_hover,
+            axis_rank_hover,
+        ) = self._build_axis_hover_lines(
             row=row,
             axis_value_columns=self.axis_value_columns,
             axis_rank_columns=self.axis_rank_columns,
@@ -10539,7 +10758,9 @@ class Anchor_CB_Companion_Fit_Global_Qualities_Radar_Plot(_Global_Qualities_Rada
         )
         return {
             "axis_values": axis_values,
+            "axis_rank_values": axis_rank_values,
             "axis_hover": axis_hover,
+            "axis_rank_hover": axis_rank_hover,
             "trace_name": trace_name,
             "color_rgb": color_rgb,
             "line_dash": line_dash,
@@ -10580,7 +10801,7 @@ class Anchor_CB_Companion_Fit_Global_Qualities_Radar_Plot(_Global_Qualities_Rada
         top_n: Optional[int] = None,
         radial_range: Optional[Sequence[float]] = None,
         show: bool = True,
-    ) -> go.Figure:
+    ) -> Optional[go.Figure]:
         """
         Plot directional global companion fits for one anchor CB.
         """
@@ -10725,9 +10946,12 @@ class Anchor_CB_Companion_Fit_Global_Qualities_Radar_Plot(_Global_Qualities_Rada
 
         return self._plot_profiles(
             profiles=profiles,
-            title=f"Global Anchor CB-Companion Fits' Radar Distributions   →   {Anchor_CB} acting as the Anchor CB <br> (Ground Duels + Aerial Duels + Ball Passing)",
+            title=(
+                f"Global Anchor CB-Companion Fits' Radar Distributions   ->   {self._anchor_player_name} acting as the Anchor CB "
+                "<br> (Ground Duels + Aerial Duels + Ball Passing)"
+            ),
             subtitle=(
-                f"Strict 3-Quality Intersection Companion Sample Size: {len(anchor_plot_df)} Anchor → Companion Pairs (Within {Anchor_CB}'s Sample)   |   Equal Weighting (⅓ Each Quality)"
+                f"Strict 3-Quality Intersection Companion Sample Size: {len(anchor_plot_df)} Anchor -> Companion Pairs (Within {self._anchor_player_name}'s Sample)   |   Equal Weighting (⅓ Each Quality)"
                 ),
             radial_range=radial_range,
             show=show,
