@@ -11,23 +11,29 @@ This module is the central visualization layer for analysis notebooks and app vi
 
 3. **Ground-Duels analysis suites**:
    Higher-level APIs that translate football analysis dataframes into ready-to-render distribution plots for:
-   - single CB quality,
-   - CB pair quality-fit,
-   - anchor-to-companion fit (directional).
+    - single CB quality,
+    - CB pair quality-fit,
+    - anchor-to-companion fit (directional).
 
 4. **Aerial-Duels analysis suites**:
    Higher-level APIs that translate football analysis dataframes into ready-to-render distribution plots for:
-   - single CB quality,
-   - CB pair quality-fit,
-   - anchor-to-companion fit (directional).
+    - single CB quality,
+    - CB pair quality-fit,
+    - anchor-to-companion fit (directional).
 
 5. **Ball-Passing analysis suites**:
    Higher-level APIs that translate football analysis dataframes into ready-to-render distribution plots for:
-   - single CB quality,
-   - CB pair quality-fit,
-   - anchor-to-companion fit (directional).
+    - single CB quality,
+    - CB pair quality-fit,
+    - anchor-to-companion fit (directional).
 
-6. **Personality plotting component**:
+6. **Global Quality analysis & Radar plots**:
+   Higher-level APIs that translate football analysis dataframes into ready-to-render radar distribution plots for:
+    - single CB quality,
+    - CB pair quality-fit.
+    - anchor-to-companion fit (directional).
+
+7. **Personality plotting component**:
    Specialized distribution view for personality-based metrics.
 
 Design goals:
@@ -37,10 +43,14 @@ Design goals:
 - **Extensibility**: resolver utilities and method-level overrides allow new metrics and workflows to be integrated with minimal duplication.
 """
 
+
+from __future__ import annotations
+
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 import plotly.io as pio
+from plotly.subplots import make_subplots
 import numpy as np
 import pandas as pd
 import re
@@ -101,6 +111,7 @@ class Visual:
     # Can't use streamlit options due to report generation
     dark_green = hex_to_rgb("#002c1c")  # hex_to_rgb(st.get_option("theme.secondaryBackgroundColor"))
     medium_green = hex_to_rgb("#003821")
+    plot_grid_green = hex_to_rgb("#00663C")
     bright_green = hex_to_rgb("#00A938")  # hex_to_rgb(st.get_option("theme.primaryColor"))
     purple = hex_to_rgb("#800080")
     magenta = hex_to_rgb("#ff00ff")
@@ -2239,7 +2250,7 @@ class CB_Pair_Ground_Duels_Distribution_Plot(_Ground_Duels_Distribution_Resolver
         )
         title = "CB-Pair Ground Duels Quality Fit Distribution"
         if section_title:
-            title = f"{title} ({section_title})"
+            title = f"{title} <br> ⇒  {section_title}"
         dist_plot.add_title(
             title=title,
             subtitle=(
@@ -3245,7 +3256,7 @@ class Anchor_CB_Companion_Fit_Ground_Duels_Distribution_Plot(_Ground_Duels_Distr
             quality_metric_value_columns=dict(metric_value_columns),
         )
         dist_plot.add_title(
-            title=f"CB-Companion Ground Duels Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
+            title=f"CB-Companion Ground Duels Potential Fits Distribution   →   {anchor_name} acting as the Anchor CB",
             subtitle=(
                 f"All {num_candidates} potential companions for {anchor_name} (directional A → B)"
                 "<br>"
@@ -4898,7 +4909,7 @@ class CB_Pair_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distribution_Resolver
         )
         title = "CB-Pair Aerial Duels Quality Fit Distribution"
         if section_title:
-            title = f"{title} ({section_title})"
+            title = f"{title} <br> ⇒  {section_title}"
         dist_plot.add_title(
             title=title,
             subtitle=(
@@ -5932,7 +5943,7 @@ class Anchor_CB_Companion_Fit_Aerial_Duels_Distribution_Plot(_Aerial_Duels_Distr
             quality_metric_value_columns=dict(metric_value_columns),
         )
         dist_plot.add_title(
-            title=f"CB-Companion Aerial Duels Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
+            title=f"CB-Companion Aerial Duels Potential Fits Distribution   →   {anchor_name} acting as the Anchor CB",
             subtitle=(
                 f"All {num_candidates} potential companions for {anchor_name} (directional A → B)"
                 "<br>"
@@ -7609,7 +7620,7 @@ class CB_Pair_Ball_Passing_Distribution_Plot(_Ball_Passing_Distribution_Resolver
         )
         title = "CB-Pair Ball Passing Quality Fit Distribution"
         if section_title:
-            title = f"{title} ({section_title})"
+            title = f"{title} <br> ⇒  {section_title}"
         dist_plot.add_title(
             title=title,
             subtitle=(
@@ -8637,7 +8648,7 @@ class Anchor_CB_Companion_Fit_Ball_Passing_Distribution_Plot(_Ball_Passing_Distr
             quality_metric_value_columns=dict(metric_value_columns),
         )
         dist_plot.add_title(
-            title=f"CB-Companion Ball Passing Potential Fits Distribution ({anchor_name} acting as the Anchor CB)",
+            title=f"CB-Companion Ball Passing Potential Fits Distribution   →   {anchor_name} acting as the Anchor CB",
             subtitle=(
                 f"All {num_candidates} potential companions for {anchor_name} (directional A → B)"
                 "<br>"
@@ -8844,9 +8855,2119 @@ class Anchor_CB_Companion_Fit_Ball_Passing_Distribution_Plot(_Ball_Passing_Distr
 
 
 
-# ---------------------------------------------------------------------------------------------------------------------------------
-# ---------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------|
+# "Global" Quality Radar Plotting Infrastructure                            |
+# --------------------------------------------------------------------------|
+# The classes below form a layered architecture:                            |
+# - `_Global_Qualities_Radar_Resolver`: shared data/selection utilities     |
+# - `Single_CB_*`, `CB_Pair_*`, `Anchor_CB_Companion_*`: public plot APIs   |
+# --------------------------------------------------------------------------|
 
+
+class _Global_Qualities_Radar_Resolver(_Ball_Passing_Distribution_Resolver):
+    """
+    Shared resolver and rendering utilities for global quality radar plots.
+
+    This class intentionally inherits the robust entity-resolution and validation behaviors already used in the quality-specific distribution plot suites.
+    """
+
+    AXIS_ORDER = ("Ground Duels", "Aerial Duels", "Ball Passing")
+    TRACE_COLORS = (
+        Visual.bright_orange,
+        Visual.magenta,
+        Visual.bright_yellow,
+        Visual.bright_blue,
+        Visual.pink,
+        Visual.gold,
+        Visual.silver,
+        Visual.ruby,
+        Visual.aqua,
+        Visual.emerald,
+        Visual.lime,
+        Visual.white,
+    )
+    TRACE_DASH_STYLES = (
+        "solid",
+        "dash",
+        "dot",
+        "dashdot",
+        "longdash",
+        "longdashdot",
+    )
+
+    @staticmethod
+    def _format_float(value: Any, *, decimals: int = 2) -> str:
+        """
+        Format a numeric-like value for labels and hover text.
+        """
+        numeric_value = _Global_Qualities_Radar_Resolver._to_number_or_none(value)
+        if numeric_value is None:
+            return "N/A"
+        return f"{numeric_value:.{decimals}f}"
+
+    @staticmethod
+    def _format_rank(value: Any) -> str:
+        """
+        Format a ranking value as `# <rank>` while handling nulls safely.
+        """
+        numeric_value = _Global_Qualities_Radar_Resolver._to_number_or_none(value)
+        if numeric_value is None:
+            return "# N/A"
+        return f"# {int(round(numeric_value))}"
+
+    @classmethod
+    def _ensure_axis_mappings(
+        cls,
+        *,
+        axis_value_columns: Mapping[str, str],
+        axis_rank_columns: Optional[Mapping[str, str]] = None,
+        axis_rank_z_columns: Optional[Mapping[str, str]] = None,
+        context: str,
+    ) -> Tuple[Dict[str, str], Dict[str, Optional[str]], Dict[str, Optional[str]]]:
+        """
+        Validate and normalize axis configuration mappings.
+
+        Returns:
+            Tuple of dictionaries keyed by `AXIS_ORDER`:
+            - value-column map,
+            - raw-rank-column map (nullable),
+            - rank-z-column map (nullable).
+        """
+        value_map: Dict[str, str] = {}
+        rank_map: Dict[str, Optional[str]] = {}
+        rank_z_map: Dict[str, Optional[str]] = {}
+
+        for axis in cls.AXIS_ORDER:
+            value_col = axis_value_columns.get(axis)
+            if not value_col:
+                raise ValueError(
+                    f"Missing axis value-column mapping for '{axis}' in {context}."
+                )
+            value_map[axis] = str(value_col)
+
+            rank_col = None
+            if axis_rank_columns is not None:
+                rank_col = axis_rank_columns.get(axis)
+            rank_map[axis] = str(rank_col) if rank_col else None
+
+            rank_z_col = None
+            if axis_rank_z_columns is not None:
+                rank_z_col = axis_rank_z_columns.get(axis)
+            rank_z_map[axis] = str(rank_z_col) if rank_z_col else None
+
+        return value_map, rank_map, rank_z_map
+
+    @classmethod
+    def _close_loop(cls, values: Sequence[Any]) -> List[Any]:
+        """
+        Close a radar polygon by repeating the first vertex at the end.
+        """
+        if not values:
+            return []
+        return [*values, values[0]]
+
+    @classmethod
+    def _resolve_radial_range(
+        cls,
+        values: Sequence[Any],
+        *,
+        radial_range: Optional[Sequence[float]] = None,
+        min_abs_span: float = 0.6,
+        padding_ratio: float = 0.15,
+    ) -> Tuple[float, float]:
+        """
+        Build a symmetric radar radial range with optional user override.
+        """
+        if radial_range is not None:
+            if len(radial_range) != 2:
+                raise ValueError("radial_range must contain exactly 2 numeric values.")
+            lower = cls._to_number_or_none(radial_range[0])
+            upper = cls._to_number_or_none(radial_range[1])
+            if lower is None or upper is None:
+                raise ValueError("radial_range values must be numeric.")
+            if lower >= upper:
+                raise ValueError("radial_range must satisfy min < max.")
+            return float(lower), float(upper)
+
+        clean_values: List[float] = []
+        for raw_value in values:
+            numeric_value = cls._to_number_or_none(raw_value)
+            if numeric_value is not None:
+                clean_values.append(float(numeric_value))
+
+        if not clean_values:
+            return (-1.0, 1.0)
+
+        max_abs = max(abs(min(clean_values)), abs(max(clean_values)))
+        bound = max(max_abs * (1.0 + padding_ratio), min_abs_span)
+        bound = float(np.round(bound, 3))
+        return (-bound, bound)
+
+    @classmethod
+    def _trace_label(
+        cls,
+        *,
+        entity_name: str,
+        global_score: Any,
+        global_rank: Any,
+    ) -> str:
+        """
+        Build a concise, information-rich trace label.
+        """
+        return (
+            f"{entity_name}   |   Global Quality Score   →   {cls._format_float(global_score)}   |   Global Quality Rank   →   {cls._format_rank(global_rank)}"
+        )
+
+    @classmethod
+    def _build_axis_hover_lines(
+        cls,
+        *,
+        row: pd.Series,
+        axis_value_columns: Mapping[str, str],
+        axis_rank_columns: Mapping[str, Optional[str]],
+        axis_rank_z_columns: Mapping[str, Optional[str]],
+        global_score_column: str,
+        global_rank_column: str,
+        global_rank_z_column: Optional[str] = None,
+    ) -> Tuple[List[float], List[float], List[str], List[str]]:
+        """
+        Build axis values and hover payloads for both score and raw-rank radars.
+        """
+        axis_values: List[float] = []
+        axis_rank_values: List[float] = []
+        axis_hover_score_lines: List[str] = []
+        axis_hover_rank_lines: List[str] = []
+
+        global_score = row.get(global_score_column, float("nan"))
+        global_rank = row.get(global_rank_column, float("nan"))
+        global_rank_z = (
+            row.get(global_rank_z_column, float("nan"))
+            if global_rank_z_column
+            else float("nan")
+        )
+
+        for axis in cls.AXIS_ORDER:
+            value_col = axis_value_columns[axis]
+            rank_col = axis_rank_columns.get(axis)
+            rank_z_col = axis_rank_z_columns.get(axis)
+
+            axis_value = row.get(value_col, float("nan"))
+            axis_values.append(float(axis_value) if pd.notna(axis_value) else float("nan"))
+            axis_rank = row.get(rank_col, float("nan")) if rank_col is not None else float("nan")
+            axis_rank_values.append(float(axis_rank) if pd.notna(axis_rank) else float("nan"))
+
+            score_hover_lines = [
+                axis,
+                f"Axis Quality Score (Z) = {cls._format_float(axis_value)}",
+            ]
+            if rank_col is not None:
+                score_hover_lines.append(
+                    f"Axis Quality Rank = {cls._format_rank(row.get(rank_col, float('nan')))}"
+                )
+            if rank_z_col is not None:
+                score_hover_lines.append(
+                    f"Axis Quality Rank Z-score = {cls._format_float(row.get(rank_z_col, float('nan')))}"
+                )
+
+            score_hover_lines.extend(
+                [
+                    f"Global Quality Score = {cls._format_float(global_score)}",
+                    f"Global Quality Rank = {cls._format_rank(global_rank)}",
+                ]
+            )
+            if global_rank_z_column is not None:
+                score_hover_lines.append(
+                    f"Global Quality Rank Z-score = {cls._format_float(global_rank_z)}"
+                )
+
+            rank_hover_lines = [
+                axis,
+                f"Axis Quality Rank = {cls._format_rank(axis_rank)}",
+                f"Axis Quality Score (Z) = {cls._format_float(axis_value)}",
+            ]
+            if rank_z_col is not None:
+                rank_hover_lines.append(
+                    f"Axis Quality Rank Z-score = {cls._format_float(row.get(rank_z_col, float('nan')))}"
+                )
+            rank_hover_lines.extend(
+                [
+                    f"Global Quality Rank = {cls._format_rank(global_rank)}",
+                    f"Global Quality Score = {cls._format_float(global_score)}",
+                ]
+            )
+            if global_rank_z_column is not None:
+                rank_hover_lines.append(
+                    f"Global Quality Rank Z-score = {cls._format_float(global_rank_z)}"
+                )
+
+            axis_hover_score_lines.append("<br>".join(score_hover_lines))
+            axis_hover_rank_lines.append("<br>".join(rank_hover_lines))
+
+        return (
+            axis_values,
+            axis_rank_values,
+            axis_hover_score_lines,
+            axis_hover_rank_lines,
+        )
+
+    @classmethod
+    def _resolve_rank_radial_range(
+        cls,
+        values: Sequence[Any],
+    ) -> Tuple[float, float]:
+        """
+        Build the rank-based radial range for the left-side radar.
+        """
+        clean_values: List[float] = []
+        for raw_value in values:
+            numeric_value = cls._to_number_or_none(raw_value)
+            if numeric_value is not None and numeric_value > 0:
+                clean_values.append(float(numeric_value))
+
+        if not clean_values:
+            return (1.0, 5.0)
+
+        upper = float(np.ceil(max(clean_values)))
+        upper = max(upper, 5.0)
+        return (1.0, upper)
+
+    @classmethod
+    def _build_rank_ticks(
+        cls,
+        *,
+        rank_range: Tuple[float, float],
+    ) -> Tuple[List[float], List[str]]:
+        """
+        Create readable raw-rank ticks for the left radar axis.
+        """
+        rank_min, rank_max = rank_range
+        max_rank = int(max(2, np.ceil(rank_max)))
+
+        if max_rank <= 6:
+            tick_values = list(range(1, max_rank + 1))
+        else:
+            tick_values = sorted(
+                {
+                    1,
+                    max_rank,
+                    int(round(max_rank * 0.25)),
+                    int(round(max_rank * 0.50)),
+                    int(round(max_rank * 0.75)),
+                }
+            )
+            tick_values = [max(1, min(max_rank, tick)) for tick in tick_values]
+            tick_values = sorted(set(tick_values))
+
+        return [float(tick) for tick in tick_values], [f"#{tick}" for tick in tick_values]
+
+    @classmethod
+    def _create_dual_radar_figure(
+        cls,
+        *,
+        title: str,
+        subtitle: str,
+        score_radial_range: Tuple[float, float],
+        rank_radial_range: Tuple[float, float],
+    ) -> go.Figure:
+        """
+        Instantiate a two-panel radar figure:
+        - left: raw rank positioning per axis,
+        - right: z-score profile with qualitative radial labels.
+        """
+        rank_tick_values, rank_tick_text = cls._build_rank_ticks(
+            rank_range=rank_radial_range,
+        )
+        score_midpoint = (
+            0.0
+            if score_radial_range[0] <= 0.0 <= score_radial_range[1]
+            else float(np.mean(score_radial_range))
+        )
+        # Reserve vertical space between subplot titles and each radar panel.
+        polar_domain_y = [0.02, 1.0]
+        subplot_title_y = 1.075
+
+        fig = make_subplots(
+            rows=1,
+            cols=2,
+            specs=[[{"type": "polar"}, {"type": "polar"}]],
+            horizontal_spacing=0.00,
+            subplot_titles=(
+                "Global Quality Ranking",
+                "Global Quality Score Profile",
+            ),
+        )
+
+        fig.update_layout(
+            autosize=True,
+            height=560,
+            margin=dict(l=60, r=60, b=95, t=120, pad=16),
+            paper_bgcolor=rgb_to_color(Visual.dark_green),
+            plot_bgcolor=rgb_to_color(Visual.dark_green),
+            polar=dict(
+                bgcolor=rgb_to_color(Visual.dark_green),
+                domain=dict(y=polar_domain_y),
+                radialaxis=dict(
+                    visible=True,
+                    range=[rank_radial_range[0], rank_radial_range[1]],
+                    autorange="reversed",
+                    gridcolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    linecolor=rgb_to_color(Visual.white, 0.75),
+                    angle=90,
+                    tickmode="array",
+                    tickvals=rank_tick_values,
+                    ticktext=rank_tick_text,
+                    tickfont={
+                        "color": rgb_to_color(Visual.white, 0.75),
+                        "family": "Gilroy-Light",
+                        "size": 11,
+                    },
+                    tickcolor=rgb_to_color(Visual.white, 0.75),
+                    tickangle=90,
+                ),
+                angularaxis=dict(
+                    gridcolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    linecolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    tickfont={
+                        "color": rgb_to_color(Visual.white, 0.9),
+                        "family": "Gilroy-Medium",
+                        "size": 12,
+                    },
+                    tickcolor=rgb_to_color(Visual.white, 0.75),
+                ),
+            ),
+            polar2=dict(
+                bgcolor=rgb_to_color(Visual.dark_green),
+                domain=dict(y=polar_domain_y),
+                radialaxis=dict(
+                    visible=True,
+                    range=[score_radial_range[0], score_radial_range[1]],
+                    gridcolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    linecolor=rgb_to_color(Visual.white, 0.75),
+                    angle=90,
+                    tickmode="array",
+                    tickvals=[
+                        float(score_radial_range[0]),
+                        float(score_midpoint),
+                        float(score_radial_range[1]),
+                    ],
+                    ticktext=["Worse   ↓", "Avg.", "Better   ↑"],
+                    tickfont={
+                        "color": rgb_to_color(Visual.white, 0.80),
+                        "family": "Gilroy-Light",
+                        "size": 11,
+                    },
+                    tickcolor=rgb_to_color(Visual.white, 0.75),
+                    tickangle=90,
+                ),
+                angularaxis=dict(
+                    gridcolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    linecolor=rgb_to_color(Visual.plot_grid_green, 0.75),
+                    tickfont={
+                        "color": rgb_to_color(Visual.white, 0.9),
+                        "family": "Gilroy-Medium",
+                        "size": 12,
+                    },
+                    tickcolor=rgb_to_color(Visual.white, 0.75),
+                ),
+            ),
+            legend=dict(
+                orientation="h",
+                font={
+                    "color": rgb_to_color(Visual.white),
+                    "family": "Gilroy-Light",
+                    "size": 11,
+                },
+                itemclick="toggle",
+                itemdoubleclick=False,
+                # itemclickside="toggle",
+                # itemclicklegend="toggle",
+                # itemclickgroup="toggle",
+                x=0.5,
+                xanchor="center",
+                y=-0.20,
+                yanchor="bottom",
+            ),
+            font={"color": rgb_to_color(Visual.white)},
+            title={
+                "text": (
+                    f"<span style='font-size: 16px'>{title}</span>"
+                    f"<br><span style='font-size: 12px'>{subtitle}</span>"
+                ),
+                "font": {
+                    "family": "Gilroy-Medium",
+                    "color": rgb_to_color(Visual.white),
+                    "size": 13,
+                },
+                "x": 0.05,
+                "xanchor": "left",
+                "y": 0.95,
+                "yanchor": "top",
+            },
+        )
+        fig.update_annotations(
+            font={
+                "color": rgb_to_color(Visual.white),
+                "family": "Gilroy-Medium",
+                "size": 12,
+            }
+        )
+        # Keep subplot titles clearly separated from the radar circles.
+        for annotation in fig.layout.annotations:
+            annotation.update(
+                y=subplot_title_y,
+                yanchor="bottom",
+            )
+        return fig
+
+    @classmethod
+    def _add_radar_trace(
+        cls,
+        fig: go.Figure,
+        *,
+        axis_values: Sequence[float],
+        axis_hover: Sequence[str],
+        trace_name: str,
+        color_rgb: Tuple[int, int, int],
+        line_dash: str = "solid",
+        fill_opacity: float = 0.18,
+        line_width: float = 2.25,
+        marker_size: int = 8,
+        subplot_ref: str = "polar",
+        showlegend: bool = True,
+        legendgroup: Optional[str] = None,
+    ) -> None:
+        """
+        Add one closed radar trace (line + markers + translucent fill).
+        """
+        theta = cls._close_loop(list(cls.AXIS_ORDER))
+        r_values = cls._close_loop([float(v) if pd.notna(v) else float("nan") for v in axis_values])
+        hover_values = cls._close_loop(list(axis_hover))
+
+        fig.add_trace(
+            go.Scatterpolar(
+                r=r_values,
+                theta=theta,
+                mode="lines+markers",
+                name=trace_name,
+                line={
+                    "color": rgb_to_color(color_rgb, 0.95),
+                    "width": line_width,
+                    "dash": line_dash,
+                },
+                marker={
+                    "size": marker_size,
+                    "color": rgb_to_color(color_rgb, 0.95),
+                    "line": {
+                        "color": rgb_to_color(color_rgb, 1.0),
+                        "width": 1.2,
+                    },
+                },
+                fill="toself",
+                fillcolor=rgb_to_color(color_rgb, fill_opacity),
+                text=hover_values,
+                hovertemplate="%{text}<extra>%{fullData.name}</extra>",
+                subplot=subplot_ref,
+                showlegend=showlegend,
+                legendgroup=legendgroup,
+            )
+        )
+
+    @classmethod
+    def _plot_profiles(
+        cls,
+        *,
+        profiles: Sequence[Dict[str, Any]],
+        title: str,
+        subtitle: str,
+        radial_range: Optional[Sequence[float]] = None,
+        show: bool = True,
+    ) -> Optional[go.Figure]:
+        """
+        Render profile dictionaries into a two-panel radar figure.
+
+        Each profile dictionary must contain:
+        - `axis_values`: length-3 list aligned to `AXIS_ORDER`,
+        - `axis_rank_values`: raw-rank values aligned to `AXIS_ORDER`,
+        - `axis_hover`: length-3 list aligned to `AXIS_ORDER`,
+        - `axis_rank_hover`: length-3 list aligned to `AXIS_ORDER`,
+        - `trace_name`: legend label,
+        - `color_rgb`: RGB tuple.
+        """
+        if not profiles:
+            raise ValueError("At least one profile is required to render a radar plot.")
+
+        pooled_score_values: List[Any] = []
+        pooled_rank_values: List[Any] = []
+        for profile in profiles:
+            pooled_score_values.extend(profile["axis_values"])
+            pooled_rank_values.extend(profile["axis_rank_values"])
+
+        resolved_score_range = cls._resolve_radial_range(
+            pooled_score_values,
+            radial_range=radial_range,
+        )
+        resolved_rank_range = cls._resolve_rank_radial_range(pooled_rank_values)
+
+        fig = cls._create_dual_radar_figure(
+            title=title,
+            subtitle=subtitle,
+            score_radial_range=resolved_score_range,
+            rank_radial_range=resolved_rank_range,
+        )
+
+        for index, profile in enumerate(profiles):
+            legend_group = f"profile_{index}"
+
+            cls._add_radar_trace(
+                fig,
+                axis_values=profile["axis_rank_values"],
+                axis_hover=profile["axis_rank_hover"],
+                trace_name=profile["trace_name"],
+                color_rgb=profile["color_rgb"],
+                line_dash=profile.get("line_dash", "solid"),
+                fill_opacity=profile.get("fill_opacity", 0.18),
+                line_width=profile.get("line_width", 2.4),
+                marker_size=profile.get("marker_size", 8),
+                subplot_ref="polar",
+                showlegend=False,
+                legendgroup=legend_group,
+            )
+            cls._add_radar_trace(
+                fig,
+                axis_values=profile["axis_values"],
+                axis_hover=profile["axis_hover"],
+                trace_name=profile["trace_name"],
+                color_rgb=profile["color_rgb"],
+                line_dash=profile.get("line_dash", "solid"),
+                fill_opacity=profile.get("fill_opacity", 0.18),
+                line_width=profile.get("line_width", 2.4),
+                marker_size=profile.get("marker_size", 8),
+                subplot_ref="polar2",
+                showlegend=True,
+                legendgroup=legend_group,
+            )
+
+        if show:
+            fig.show()
+            return None
+        return fig
+
+
+class Single_CB_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
+    """
+    Global radar analysis for individual CBs across the 3 quality dimensions.
+
+    This class expects the strict-intersection global single-CB table and supports:
+    - one-player radar analysis,
+    - multi-player comparison radar analysis,
+    - selectors by name, ID, and global rank.
+    """
+
+    DEFAULT_AXIS_VALUE_COLUMNS = {
+        "Ground Duels": "CB_ground_duels_quality_z_score",
+        "Aerial Duels": "CB_aerial_duels_quality_z_score",
+        "Ball Passing": "CB_ball_passing_quality_z_score",
+    }
+    DEFAULT_AXIS_RANK_COLUMNS = {
+        "Ground Duels": "CB_rank_for_ground_duels_quality",
+        "Aerial Duels": "CB_rank_for_aerial_duels_quality",
+        "Ball Passing": "CB_rank_for_ball_passing_quality",
+    }
+    DEFAULT_AXIS_RANK_Z_COLUMNS = {
+        "Ground Duels": "CB_rank_for_ground_duels_quality_z_score",
+        "Aerial Duels": "CB_rank_for_aerial_duels_quality_z_score",
+        "Ball Passing": "CB_rank_for_ball_passing_quality_z_score",
+    }
+
+    GLOBAL_SCORE_COLUMN = "global_quality_z_score"
+    GLOBAL_RANK_COLUMN = "global_quality_rank"
+    GLOBAL_RANK_Z_COLUMN = "global_quality_rank_z_score"
+
+    def __init__(
+        self,
+        *,
+        df_global_single_cb: pd.DataFrame,
+        axis_value_columns: Optional[Mapping[str, str]] = None,
+        axis_rank_columns: Optional[Mapping[str, str]] = None,
+        axis_rank_z_columns: Optional[Mapping[str, str]] = None,
+        global_score_column: str = GLOBAL_SCORE_COLUMN,
+        global_rank_column: str = GLOBAL_RANK_COLUMN,
+        global_rank_z_column: str = GLOBAL_RANK_Z_COLUMN,
+    ) -> None:
+        """
+        Args:
+            df_global_single_cb: Global single-CB dataframe (strict intersection).
+            axis_value_columns: Optional override map for radar axis value columns.
+            axis_rank_columns: Optional override map for axis rank columns.
+            axis_rank_z_columns: Optional override map for axis rank-z columns.
+            global_score_column: Column storing global combined quality z-score.
+            global_rank_column: Column storing global rank (1 = best).
+            global_rank_z_column: Column storing global rank z-score.
+        """
+        self.df_global_single_cb = df_global_single_cb.copy()
+        self.global_score_column = str(global_score_column)
+        self.global_rank_column = str(global_rank_column)
+        self.global_rank_z_column = str(global_rank_z_column)
+
+        axis_values = dict(self.DEFAULT_AXIS_VALUE_COLUMNS)
+        if axis_value_columns is not None:
+            axis_values.update({str(k): str(v) for k, v in axis_value_columns.items()})
+
+        axis_ranks = dict(self.DEFAULT_AXIS_RANK_COLUMNS)
+        if axis_rank_columns is not None:
+            axis_ranks.update({str(k): str(v) for k, v in axis_rank_columns.items()})
+
+        axis_rank_z = dict(self.DEFAULT_AXIS_RANK_Z_COLUMNS)
+        if axis_rank_z_columns is not None:
+            axis_rank_z.update(
+                {str(k): str(v) for k, v in axis_rank_z_columns.items()}
+            )
+
+        (
+            self.axis_value_columns,
+            self.axis_rank_columns,
+            self.axis_rank_z_columns,
+        ) = self._ensure_axis_mappings(
+            axis_value_columns=axis_values,
+            axis_rank_columns=axis_ranks,
+            axis_rank_z_columns=axis_rank_z,
+            context="Single_CB_Global_Qualities_Radar_Plot",
+        )
+
+    def _prepare_plot_df(self) -> pd.DataFrame:
+        """
+        Validate schema and prepare a deterministic plotting dataframe.
+        """
+        required_columns = [
+            "player.id",
+            "player.name",
+            self.global_score_column,
+            self.global_rank_column,
+            self.global_rank_z_column,
+        ] + list(self.axis_value_columns.values())
+
+        for maybe_col in self.axis_rank_columns.values():
+            if maybe_col is not None:
+                required_columns.append(maybe_col)
+        for maybe_col in self.axis_rank_z_columns.values():
+            if maybe_col is not None:
+                required_columns.append(maybe_col)
+
+        self._ensure_columns(
+            self.df_global_single_cb,
+            required_columns,
+            "global single-CB radar plotting dataframe",
+        )
+
+        plot_df = self.df_global_single_cb.copy()
+        plot_df[self.global_rank_column] = pd.to_numeric(
+            plot_df[self.global_rank_column],
+            errors="coerce",
+        )
+        plot_df = plot_df.sort_values(
+            [self.global_rank_column, "player.name"],
+            ascending=[True, True],
+        ).reset_index(drop=True)
+        return plot_df
+
+    def _resolve_single_cb(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        CB: Any = None,
+        CB_ID: Any = None,
+        CB_Rank: Any = None,
+    ) -> pd.Series:
+        """
+        Resolve one CB row from name/ID/global-rank selectors.
+        """
+        if CB is None and CB_ID is None and CB_Rank is None:
+            return plot_df.iloc[0]
+
+        if CB_Rank is not None:
+            if CB is not None or CB_ID is not None:
+                raise ValueError("Provide either CB_Rank or CB/CB_ID, not both.")
+            return self._resolve_row_by_rank(
+                plot_df,
+                rank_column=self.global_rank_column,
+                rank_value=CB_Rank,
+                entity_label="CB player",
+                display_column="player.name",
+            )
+
+        candidates = plot_df[["player.id", "player.name"]].drop_duplicates()
+        resolved = self._resolve_entity(
+            candidates,
+            entity_value=CB,
+            entity_id=CB_ID,
+            id_col="player.id",
+            name_col="player.name",
+            entity_label="CB player",
+        )
+        matches = plot_df[plot_df["player.id"] == resolved["player.id"]]
+        if matches.empty:
+            raise ValueError(
+                f"Resolved CB '{resolved['player.name']}' is not available in the global plotting dataframe."
+            )
+        return matches.iloc[0]
+
+    def _build_profile(
+        self,
+        row: pd.Series,
+        *,
+        trace_name: str,
+        color_rgb: Tuple[int, int, int],
+        line_dash: str = "solid",
+        fill_opacity: float = 0.18,
+    ) -> Dict[str, Any]:
+        """
+        Build one plotting profile dictionary for `_plot_profiles`.
+        """
+        (
+            axis_values,
+            axis_rank_values,
+            axis_hover,
+            axis_rank_hover,
+        ) = self._build_axis_hover_lines(
+            row=row,
+            axis_value_columns=self.axis_value_columns,
+            axis_rank_columns=self.axis_rank_columns,
+            axis_rank_z_columns=self.axis_rank_z_columns,
+            global_score_column=self.global_score_column,
+            global_rank_column=self.global_rank_column,
+            global_rank_z_column=self.global_rank_z_column,
+        )
+        return {
+            "axis_values": axis_values,
+            "axis_rank_values": axis_rank_values,
+            "axis_hover": axis_hover,
+            "axis_rank_hover": axis_rank_hover,
+            "trace_name": trace_name,
+            "color_rgb": color_rgb,
+            "line_dash": line_dash,
+            "fill_opacity": fill_opacity,
+        }
+
+    def _build_average_profile(self, plot_df: pd.DataFrame) -> pd.Series:
+        """
+        Build a synthetic league-average row for radar overlays.
+        """
+        average_data: Dict[str, Any] = {
+            "player.id": -1,
+            "player.name": "CBs' Global Average",
+        }
+
+        mean_columns = (
+            list(self.axis_value_columns.values())
+            + [
+                self.global_score_column,
+                self.global_rank_column,
+                self.global_rank_z_column,
+            ]
+            + [col for col in self.axis_rank_columns.values() if col is not None]
+            + [col for col in self.axis_rank_z_columns.values() if col is not None]
+        )
+        for col in dict.fromkeys(mean_columns):
+            average_data[col] = pd.to_numeric(plot_df[col], errors="coerce").mean()
+
+        return pd.Series(average_data)
+
+    def Plot_Single_CB(
+        self,
+        *,
+        CB: Any = None,
+        CB_ID: Any = None,
+        CB_Rank: Any = None,
+        include_best: bool = False,
+        include_worst: bool = False,
+        include_league_average: bool = True,
+        radial_range: Optional[Sequence[float]] = None,
+        show: bool = True,
+    ) -> Optional[go.Figure]:
+        """
+        Plot one selected CB on the global 3-quality radar.
+
+        Optional references:
+        - best global CB profile,
+        - worst global CB profile,
+        - global league-average profile.
+        """
+        plot_df = self._prepare_plot_df()
+        selected = self._resolve_single_cb(
+            plot_df,
+            CB=CB,
+            CB_ID=CB_ID,
+            CB_Rank=CB_Rank,
+        )
+
+        used_ids = set()
+        profiles: List[Dict[str, Any]] = []
+
+        selected_id = selected["player.id"]
+        used_ids.add(selected_id)
+        profiles.append(
+            self._build_profile(
+                selected,
+                trace_name=self._trace_label(
+                    entity_name=str(selected["player.name"]),
+                    global_score=selected[self.global_score_column],
+                    global_rank=selected[self.global_rank_column],
+                ),
+                color_rgb=self.TRACE_COLORS[0],
+                line_dash="solid",
+            )
+        )
+
+        if include_best:
+            best_row = plot_df.sort_values(
+                [self.global_score_column, "player.name"],
+                ascending=[False, True],
+            ).iloc[0]
+            best_id = best_row["player.id"]
+            if best_id not in used_ids:
+                used_ids.add(best_id)
+                profiles.append(
+                    self._build_profile(
+                        best_row,
+                        trace_name=self._trace_label(
+                            entity_name=f"{best_row['player.name']} (Best)",
+                            global_score=best_row[self.global_score_column],
+                            global_rank=best_row[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[1],
+                        line_dash="dash",
+                    )
+                )
+
+        if include_worst:
+            worst_row = plot_df.sort_values(
+                [self.global_score_column, "player.name"],
+                ascending=[True, True],
+            ).iloc[0]
+            worst_id = worst_row["player.id"]
+            if worst_id not in used_ids:
+                used_ids.add(worst_id)
+                profiles.append(
+                    self._build_profile(
+                        worst_row,
+                        trace_name=self._trace_label(
+                            entity_name=f"{worst_row['player.name']} (Worst)",
+                            global_score=worst_row[self.global_score_column],
+                            global_rank=worst_row[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[2],
+                        line_dash="dot",
+                    )
+                )
+
+        if include_league_average:
+            average_row = self._build_average_profile(plot_df)
+            profiles.append(
+                self._build_profile(
+                    average_row,
+                    trace_name=self._trace_label(
+                        entity_name="CBs' Global Average",
+                        global_score=average_row[self.global_score_column],
+                        global_rank=average_row[self.global_rank_column],
+                    ),
+                    color_rgb=self.TRACE_COLORS[3],
+                    line_dash="longdash",
+                )
+            )
+
+        return self._plot_profiles(
+            profiles=profiles,
+            title="Global CB Quality Radar Distribution <br> (Ground Duels + Aerial Duels + Ball Passing)",
+            subtitle=(
+                f"Strict 3-Quality Intersection Cohort: {len(plot_df)} CBs   |   Equal Weighting (⅓ Each Quality)"
+                ),
+            radial_range=radial_range,
+            show=show,
+        )
+
+    def Plot_CBs_Comparison(
+        self,
+        *,
+        CBs: Optional[Sequence[Any]] = None,
+        CB_IDs: Optional[Sequence[Any]] = None,
+        CB_Rank: Optional[Any] = None,
+        CB_Ranks: Optional[Sequence[Any]] = None,
+        include_best: bool = False,
+        include_worst: bool = False,
+        include_league_average: bool = True,
+        radial_range: Optional[Sequence[float]] = None,
+        show: bool = True,
+    ) -> Optional[go.Figure]:
+        """
+        Compare multiple CBs on a shared global 3-axis radar.
+
+        Supported selectors:
+        - explicit names (`CBs`),
+        - explicit IDs (`CB_IDs`),
+        - global rank selectors (`CB_Rank`, `CB_Ranks`).
+        """
+        plot_df = self._prepare_plot_df()
+
+        requested_items: List[Tuple[str, Any, Any]] = []
+        for cb_id in (CB_IDs or []):
+            requested_items.append(("id", None, cb_id))
+        for cb_name in (CBs or []):
+            requested_items.append(("name", cb_name, None))
+
+        if CB_Ranks is not None:
+            if CB_Rank is not None:
+                raise ValueError("Please provide either CB_Rank or CB_Ranks, not both.")
+            for rank_value in self._coerce_unique_positive_ranks(
+                CB_Ranks,
+                param_name="CB_Ranks",
+            ):
+                requested_items.append(("rank", rank_value, None))
+        if CB_Rank is not None:
+            requested_items.append(
+                (
+                    "rank",
+                    self._coerce_positive_rank(CB_Rank, param_name="CB_Rank"),
+                    None,
+                )
+            )
+
+        if not requested_items and not any(
+            [include_best, include_worst, include_league_average]
+        ):
+            raise ValueError(
+                "Please provide at least one selector via CBs, CB_IDs, CB_Rank, or CB_Ranks; or enable one of include_best/include_worst/include_league_average."
+            )
+
+        profiles: List[Dict[str, Any]] = []
+        used_ids = set()
+        color_index = 0
+
+        for mode, name_or_rank, cb_id in requested_items:
+            if mode == "rank":
+                row = self._resolve_single_cb(plot_df, CB_Rank=name_or_rank)
+            else:
+                row = self._resolve_single_cb(plot_df, CB=name_or_rank, CB_ID=cb_id)
+
+            cb_unique_id = row["player.id"]
+            if cb_unique_id in used_ids:
+                continue
+            used_ids.add(cb_unique_id)
+
+            profiles.append(
+                self._build_profile(
+                    row,
+                    trace_name=self._trace_label(
+                        entity_name=str(row["player.name"]),
+                        global_score=row[self.global_score_column],
+                        global_rank=row[self.global_rank_column],
+                    ),
+                    color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    line_dash=self.TRACE_DASH_STYLES[
+                        color_index % len(self.TRACE_DASH_STYLES)
+                    ],
+                )
+            )
+            color_index += 1
+
+        if include_best:
+            best_row = plot_df.sort_values(
+                [self.global_score_column, "player.name"],
+                ascending=[False, True],
+            ).iloc[0]
+            best_id = best_row["player.id"]
+            if best_id not in used_ids:
+                used_ids.add(best_id)
+                profiles.append(
+                    self._build_profile(
+                        best_row,
+                        trace_name=self._trace_label(
+                            entity_name=f"{best_row['player.name']} (Best)",
+                            global_score=best_row[self.global_score_column],
+                            global_rank=best_row[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    )
+                )
+                color_index += 1
+
+        if include_worst:
+            worst_row = plot_df.sort_values(
+                [self.global_score_column, "player.name"],
+                ascending=[True, True],
+            ).iloc[0]
+            worst_id = worst_row["player.id"]
+            if worst_id not in used_ids:
+                used_ids.add(worst_id)
+                profiles.append(
+                    self._build_profile(
+                        worst_row,
+                        trace_name=self._trace_label(
+                            entity_name=f"{worst_row['player.name']} (Worst)",
+                            global_score=worst_row[self.global_score_column],
+                            global_rank=worst_row[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    )
+                )
+                color_index += 1
+
+        if include_league_average:
+            average_row = self._build_average_profile(plot_df)
+            profiles.append(
+                self._build_profile(
+                    average_row,
+                    trace_name=self._trace_label(
+                        entity_name="CBs' Global Average",
+                        global_score=average_row[self.global_score_column],
+                        global_rank=average_row[self.global_rank_column],
+                    ),
+                    color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                )
+            )
+
+        return self._plot_profiles(
+            profiles=profiles,
+            title="Global CBs' Quality Radar Distributions Comparison <br> (Ground Duels + Aerial Duels + Ball Passing)",
+            subtitle=(
+                f"Strict 3-Quality Intersection Cohort: {len(plot_df)} CBs   |   Equal Weighting (⅓ Each Quality)"
+                ),
+            radial_range=radial_range,
+            show=show,
+        )
+
+
+class CB_Pair_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
+    """
+    Global radar analysis for CB pairs across Ground/Aerial/Ball quality fits.
+    """
+
+    DEFAULT_AXIS_VALUE_COLUMNS = {
+        "Ground Duels": "ground_CB_pair_fit_z_score",
+        "Aerial Duels": "aerial_CB_pair_fit_z_score",
+        "Ball Passing": "ball_CB_pair_fit_z_score",
+    }
+    DEFAULT_AXIS_RANK_COLUMNS = {
+        "Ground Duels": "ground_CB_pair_fit_rank",
+        "Aerial Duels": "aerial_CB_pair_fit_rank",
+        "Ball Passing": "ball_CB_pair_fit_rank",
+    }
+    DEFAULT_AXIS_RANK_Z_COLUMNS = {
+        "Ground Duels": "ground_CB_pair_fit_rank_z_score",
+        "Aerial Duels": "aerial_CB_pair_fit_rank_z_score",
+        "Ball Passing": "ball_CB_pair_fit_rank_z_score",
+    }
+
+    GLOBAL_SCORE_COLUMN = "global_CB_pair_fit_z_score"
+    GLOBAL_RANK_COLUMN = "global_CB_pair_fit_rank"
+    GLOBAL_RANK_Z_COLUMN = "global_CB_pair_fit_rank_z_score"
+
+    def __init__(
+        self,
+        *,
+        df_global_cb_pairs: pd.DataFrame,
+        axis_value_columns: Optional[Mapping[str, str]] = None,
+        axis_rank_columns: Optional[Mapping[str, str]] = None,
+        axis_rank_z_columns: Optional[Mapping[str, str]] = None,
+        global_score_column: str = GLOBAL_SCORE_COLUMN,
+        global_rank_column: str = GLOBAL_RANK_COLUMN,
+        global_rank_z_column: str = GLOBAL_RANK_Z_COLUMN,
+    ) -> None:
+        self.df_global_cb_pairs = df_global_cb_pairs.copy()
+        self.global_score_column = str(global_score_column)
+        self.global_rank_column = str(global_rank_column)
+        self.global_rank_z_column = str(global_rank_z_column)
+
+        axis_values = dict(self.DEFAULT_AXIS_VALUE_COLUMNS)
+        if axis_value_columns is not None:
+            axis_values.update({str(k): str(v) for k, v in axis_value_columns.items()})
+
+        axis_ranks = dict(self.DEFAULT_AXIS_RANK_COLUMNS)
+        if axis_rank_columns is not None:
+            axis_ranks.update({str(k): str(v) for k, v in axis_rank_columns.items()})
+
+        axis_rank_z = dict(self.DEFAULT_AXIS_RANK_Z_COLUMNS)
+        if axis_rank_z_columns is not None:
+            axis_rank_z.update(
+                {str(k): str(v) for k, v in axis_rank_z_columns.items()}
+            )
+
+        (
+            self.axis_value_columns,
+            self.axis_rank_columns,
+            self.axis_rank_z_columns,
+        ) = self._ensure_axis_mappings(
+            axis_value_columns=axis_values,
+            axis_rank_columns=axis_ranks,
+            axis_rank_z_columns=axis_rank_z,
+            context="CB_Pair_Global_Qualities_Radar_Plot",
+        )
+
+    def _prepare_plot_df(self) -> pd.DataFrame:
+        required_columns = [
+            "pair_key",
+            "pair_name",
+            "player.id_CB1",
+            "player.name_CB1",
+            "player.id_CB2",
+            "player.name_CB2",
+            self.global_score_column,
+            self.global_rank_column,
+            self.global_rank_z_column,
+        ] + list(self.axis_value_columns.values())
+
+        for maybe_col in self.axis_rank_columns.values():
+            if maybe_col is not None:
+                required_columns.append(maybe_col)
+        for maybe_col in self.axis_rank_z_columns.values():
+            if maybe_col is not None:
+                required_columns.append(maybe_col)
+
+        self._ensure_columns(
+            self.df_global_cb_pairs,
+            required_columns,
+            "global CB-pair radar plotting dataframe",
+        )
+
+        plot_df = self.df_global_cb_pairs.copy()
+        plot_df[self.global_rank_column] = pd.to_numeric(
+            plot_df[self.global_rank_column],
+            errors="coerce",
+        )
+        plot_df = plot_df.sort_values(
+            [self.global_rank_column, "pair_name"],
+            ascending=[True, True],
+        ).reset_index(drop=True)
+        return plot_df
+
+    def _player_candidates_from_pairs(self, plot_df: pd.DataFrame) -> pd.DataFrame:
+        self._ensure_columns(
+            plot_df,
+            ["player.id_CB1", "player.name_CB1", "player.id_CB2", "player.name_CB2"],
+            "global CB-pair player resolution",
+        )
+        cb1 = plot_df[["player.id_CB1", "player.name_CB1"]].rename(
+            columns={"player.id_CB1": "player.id", "player.name_CB1": "player.name"}
+        )
+        cb2 = plot_df[["player.id_CB2", "player.name_CB2"]].rename(
+            columns={"player.id_CB2": "player.id", "player.name_CB2": "player.name"}
+        )
+        return pd.concat([cb1, cb2], ignore_index=True).drop_duplicates()
+
+    def _resolve_pair_row(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        CB_Pair: Any = None,
+        CB_1: Any = None,
+        CB_2: Any = None,
+        CB_1_ID: Any = None,
+        CB_2_ID: Any = None,
+    ) -> Optional[pd.Series]:
+        if (
+            CB_Pair is None
+            and CB_1 is None
+            and CB_2 is None
+            and CB_1_ID is None
+            and CB_2_ID is None
+        ):
+            return None
+
+        if CB_Pair is not None:
+            if isinstance(CB_Pair, str):
+                CB_1, CB_2 = self._split_pair_string(CB_Pair)
+            elif isinstance(CB_Pair, (list, tuple)) and len(CB_Pair) == 2:
+                CB_1, CB_2 = CB_Pair[0], CB_Pair[1]
+            elif isinstance(CB_Pair, dict):
+                CB_1 = CB_Pair.get("CB_1", CB_1)
+                CB_2 = CB_Pair.get("CB_2", CB_2)
+                CB_1_ID = CB_Pair.get("CB_1_ID", CB_1_ID)
+                CB_2_ID = CB_Pair.get("CB_2_ID", CB_2_ID)
+                if CB_Pair.get("CB_Pair") is not None:
+                    CB_1, CB_2 = self._split_pair_string(CB_Pair["CB_Pair"])
+            else:
+                raise ValueError(
+                    "CB_Pair must be a string ('A + B', 'A and B', 'A & B'), a tuple/list of two CB inputs, or a dict with CB_1/CB_2 keys."
+                )
+
+        if (CB_1 is None and CB_1_ID is None) or (CB_2 is None and CB_2_ID is None):
+            raise ValueError("Please provide both CB_1 and CB_2 (name/surname and/or ID).")
+
+        candidates = self._player_candidates_from_pairs(plot_df)
+        resolved_cb1 = self._resolve_entity(
+            candidates,
+            entity_value=CB_1,
+            entity_id=CB_1_ID,
+            id_col="player.id",
+            name_col="player.name",
+            entity_label="CB player",
+        )
+        resolved_cb2 = self._resolve_entity(
+            candidates,
+            entity_value=CB_2,
+            entity_id=CB_2_ID,
+            id_col="player.id",
+            name_col="player.name",
+            entity_label="CB player",
+        )
+
+        id_1 = resolved_cb1["player.id"]
+        id_2 = resolved_cb2["player.id"]
+        pair_mask = (
+            ((plot_df["player.id_CB1"] == id_1) & (plot_df["player.id_CB2"] == id_2))
+            | ((plot_df["player.id_CB1"] == id_2) & (plot_df["player.id_CB2"] == id_1))
+        )
+        matches = plot_df[pair_mask]
+        if matches.empty:
+            raise ValueError(
+                f"No CB pair found for '{resolved_cb1['player.name']}' + '{resolved_cb2['player.name']}'."
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Multiple rows found for pair '{resolved_cb1['player.name']}' + '{resolved_cb2['player.name']}'."
+            )
+        return matches.iloc[0]
+
+    def _resolve_pair_row_by_rank(self, plot_df: pd.DataFrame, *, CB_Pair_Rank: Any) -> pd.Series:
+        return self._resolve_row_by_rank(
+            plot_df,
+            rank_column=self.global_rank_column,
+            rank_value=CB_Pair_Rank,
+            entity_label="CB pair",
+            display_column="pair_name",
+        )
+
+    @staticmethod
+    def _pair_key(row: pd.Series) -> str:
+        if "pair_key" in row.index and pd.notna(row["pair_key"]):
+            return str(row["pair_key"])
+        return str(row.get("pair_name", ""))
+
+    def _build_profile(
+        self,
+        row: pd.Series,
+        *,
+        trace_name: str,
+        color_rgb: Tuple[int, int, int],
+        line_dash: str = "solid",
+        fill_opacity: float = 0.18,
+    ) -> Dict[str, Any]:
+        (
+            axis_values,
+            axis_rank_values,
+            axis_hover,
+            axis_rank_hover,
+        ) = self._build_axis_hover_lines(
+            row=row,
+            axis_value_columns=self.axis_value_columns,
+            axis_rank_columns=self.axis_rank_columns,
+            axis_rank_z_columns=self.axis_rank_z_columns,
+            global_score_column=self.global_score_column,
+            global_rank_column=self.global_rank_column,
+            global_rank_z_column=self.global_rank_z_column,
+        )
+        return {
+            "axis_values": axis_values,
+            "axis_rank_values": axis_rank_values,
+            "axis_hover": axis_hover,
+            "axis_rank_hover": axis_rank_hover,
+            "trace_name": trace_name,
+            "color_rgb": color_rgb,
+            "line_dash": line_dash,
+            "fill_opacity": fill_opacity,
+        }
+
+    def _build_average_profile(self, plot_df: pd.DataFrame) -> pd.Series:
+        average_data: Dict[str, Any] = {
+            "pair_key": "__pair_average__",
+            "pair_name": "CB-Pairs' Global Average",
+        }
+        mean_columns = (
+            list(self.axis_value_columns.values())
+            + [
+                self.global_score_column,
+                self.global_rank_column,
+                self.global_rank_z_column,
+            ]
+            + [col for col in self.axis_rank_columns.values() if col is not None]
+            + [col for col in self.axis_rank_z_columns.values() if col is not None]
+        )
+        for col in dict.fromkeys(mean_columns):
+            average_data[col] = pd.to_numeric(plot_df[col], errors="coerce").mean()
+        return pd.Series(average_data)
+
+    def Plot_CB_Pair(
+        self,
+        *,
+        CB_Pair: Any = None,
+        CB_1: Any = None,
+        CB_2: Any = None,
+        CB_1_ID: Any = None,
+        CB_2_ID: Any = None,
+        CB_Pair_Rank: Optional[Any] = None,
+        include_best: bool = True,
+        include_worst: bool = False,
+        include_average: bool = False,
+        radial_range: Optional[Sequence[float]] = None,
+        show: bool = True,
+    ) -> Optional[go.Figure]:
+        """
+        Plot one selected CB pair on the global 3-quality radar.
+        """
+        plot_df = self._prepare_plot_df()
+
+        if CB_Pair_Rank is not None and any(
+            value is not None for value in [CB_Pair, CB_1, CB_2, CB_1_ID, CB_2_ID]
+        ):
+            raise ValueError(
+                "Please provide either CB_Pair_Rank or CB_Pair/CB_1/CB_2 selectors, not both."
+            )
+
+        if CB_Pair_Rank is not None:
+            selected_pair = self._resolve_pair_row_by_rank(
+                plot_df,
+                CB_Pair_Rank=CB_Pair_Rank,
+            )
+        else:
+            selected_pair = self._resolve_pair_row(
+                plot_df,
+                CB_Pair=CB_Pair,
+                CB_1=CB_1,
+                CB_2=CB_2,
+                CB_1_ID=CB_1_ID,
+                CB_2_ID=CB_2_ID,
+            )
+            if selected_pair is None:
+                selected_pair = plot_df.iloc[0]
+
+        profiles: List[Dict[str, Any]] = []
+        used_keys = set()
+
+        selected_key = self._pair_key(selected_pair)
+        used_keys.add(selected_key)
+        profiles.append(
+            self._build_profile(
+                selected_pair,
+                trace_name=self._trace_label(
+                    entity_name=str(selected_pair["pair_name"]),
+                    global_score=selected_pair[self.global_score_column],
+                    global_rank=selected_pair[self.global_rank_column],
+                ),
+                color_rgb=self.TRACE_COLORS[0],
+            )
+        )
+
+        if include_best:
+            best_pair = plot_df.sort_values(
+                [self.global_score_column, "pair_name"],
+                ascending=[False, True],
+            ).iloc[0]
+            best_key = self._pair_key(best_pair)
+            if best_key not in used_keys:
+                used_keys.add(best_key)
+                profiles.append(
+                    self._build_profile(
+                        best_pair,
+                        trace_name=self._trace_label(
+                            entity_name=f"{best_pair['pair_name']} (Best)",
+                            global_score=best_pair[self.global_score_column],
+                            global_rank=best_pair[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[1],
+                    )
+                )
+
+        if include_worst:
+            worst_pair = plot_df.sort_values(
+                [self.global_score_column, "pair_name"],
+                ascending=[True, True],
+            ).iloc[0]
+            worst_key = self._pair_key(worst_pair)
+            if worst_key not in used_keys:
+                used_keys.add(worst_key)
+                profiles.append(
+                    self._build_profile(
+                        worst_pair,
+                        trace_name=self._trace_label(
+                            entity_name=f"{worst_pair['pair_name']} (Worst)",
+                            global_score=worst_pair[self.global_score_column],
+                            global_rank=worst_pair[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[2],
+                    )
+                )
+
+        if include_average:
+            average_pair = self._build_average_profile(plot_df)
+            profiles.append(
+                self._build_profile(
+                    average_pair,
+                    trace_name=self._trace_label(
+                        entity_name="CB-Pairs' Global Average",
+                        global_score=average_pair[self.global_score_column],
+                        global_rank=average_pair[self.global_rank_column],
+                    ),
+                    color_rgb=self.TRACE_COLORS[3],
+                )
+            )
+
+        return self._plot_profiles(
+            profiles=profiles,
+            title="Global CB-Pair Fit Radar Distribution <br> (Ground Duels + Aerial Duels + Ball Passing)",
+            subtitle=(
+                f"Strict 3-Quality Intersection Cohort: {len(plot_df)} unordered CB-Pairs   |   Equal Weighting (⅓ Each Quality)"
+                ),
+            radial_range=radial_range,
+            show=show,
+        )
+
+    def Plot_CB_Pairs_Comparison(
+        self,
+        *,
+        CB_Pairs: Optional[Sequence[Union[str, Sequence[Any], Dict[str, Any]]]] = None,
+        CB_Pair_Rank: Optional[int] = None,
+        CB_Pair_Ranks: Optional[Sequence[int]] = None,
+        include_best: bool = False,
+        include_worst: bool = False,
+        include_average: bool = False,
+        radial_range: Optional[Sequence[float]] = None,
+        show: bool = True,
+    ) -> Optional[go.Figure]:
+        """
+        Compare multiple CB pairs on one global 3-axis radar.
+        """
+        plot_df = self._prepare_plot_df()
+
+        specs: List[Dict[str, Any]] = []
+        for item in (CB_Pairs or []):
+            if isinstance(item, str):
+                specs.append({"CB_Pair": item})
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                specs.append({"CB_1": item[0], "CB_2": item[1]})
+            elif isinstance(item, dict):
+                specs.append(dict(item))
+            else:
+                raise ValueError(
+                    "Each item in CB_Pairs must be a pair string, a tuple/list of length 2, or a dict."
+                )
+
+        if CB_Pair_Ranks is not None:
+            if CB_Pair_Rank is not None:
+                raise ValueError(
+                    "Please provide either CB_Pair_Rank or CB_Pair_Ranks, not both."
+                )
+            for rank_value in self._coerce_unique_positive_ranks(
+                CB_Pair_Ranks,
+                param_name="CB_Pair_Ranks",
+            ):
+                specs.append({"CB_Pair_Rank": rank_value})
+        if CB_Pair_Rank is not None:
+            specs.append(
+                {
+                    "CB_Pair_Rank": self._coerce_positive_rank(
+                        CB_Pair_Rank,
+                        param_name="CB_Pair_Rank",
+                    )
+                }
+            )
+
+        if not specs and not any([include_best, include_worst, include_average]):
+            raise ValueError(
+                "Please provide at least one pair selector via CB_Pairs/CB_Pair_Rank/CB_Pair_Ranks; or enable include_best/include_worst/include_average."
+            )
+
+        profiles: List[Dict[str, Any]] = []
+        used_keys = set()
+        color_index = 0
+
+        for spec in specs:
+            if spec.get("CB_Pair_Rank") is not None:
+                row = self._resolve_pair_row_by_rank(
+                    plot_df,
+                    CB_Pair_Rank=spec["CB_Pair_Rank"],
+                )
+            else:
+                row = self._resolve_pair_row(
+                    plot_df,
+                    CB_Pair=spec.get("CB_Pair"),
+                    CB_1=spec.get("CB_1"),
+                    CB_2=spec.get("CB_2"),
+                    CB_1_ID=spec.get("CB_1_ID"),
+                    CB_2_ID=spec.get("CB_2_ID"),
+                )
+                if row is None:
+                    continue
+
+            pair_key = self._pair_key(row)
+            if pair_key in used_keys:
+                continue
+            used_keys.add(pair_key)
+
+            profiles.append(
+                self._build_profile(
+                    row,
+                    trace_name=self._trace_label(
+                        entity_name=str(row["pair_name"]),
+                        global_score=row[self.global_score_column],
+                        global_rank=row[self.global_rank_column],
+                    ),
+                    color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    line_dash=self.TRACE_DASH_STYLES[
+                        color_index % len(self.TRACE_DASH_STYLES)
+                    ],
+                )
+            )
+            color_index += 1
+
+        if include_best:
+            best_pair = plot_df.sort_values(
+                [self.global_score_column, "pair_name"],
+                ascending=[False, True],
+            ).iloc[0]
+            best_key = self._pair_key(best_pair)
+            if best_key not in used_keys:
+                used_keys.add(best_key)
+                profiles.append(
+                    self._build_profile(
+                        best_pair,
+                        trace_name=self._trace_label(
+                            entity_name=f"{best_pair['pair_name']} (Best)",
+                            global_score=best_pair[self.global_score_column],
+                            global_rank=best_pair[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    )
+                )
+                color_index += 1
+
+        if include_worst:
+            worst_pair = plot_df.sort_values(
+                [self.global_score_column, "pair_name"],
+                ascending=[True, True],
+            ).iloc[0]
+            worst_key = self._pair_key(worst_pair)
+            if worst_key not in used_keys:
+                used_keys.add(worst_key)
+                profiles.append(
+                    self._build_profile(
+                        worst_pair,
+                        trace_name=self._trace_label(
+                            entity_name=f"{worst_pair['pair_name']} (Worst)",
+                            global_score=worst_pair[self.global_score_column],
+                            global_rank=worst_pair[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    )
+                )
+                color_index += 1
+
+        if include_average:
+            average_pair = self._build_average_profile(plot_df)
+            profiles.append(
+                self._build_profile(
+                    average_pair,
+                    trace_name=self._trace_label(
+                        entity_name="CB-Pairs' Global Average",
+                        global_score=average_pair[self.global_score_column],
+                        global_rank=average_pair[self.global_rank_column],
+                    ),
+                    color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                )
+            )
+
+        return self._plot_profiles(
+            profiles=profiles,
+            title="Global CB-Pairs' Fit Radar Distributions Comparison <br> (Ground Duels + Aerial Duels + Ball Passing)",
+            subtitle=(
+                f"Strict 3-Quality Intersection Cohort: {len(plot_df)} unordered CB-Pairs   |   Equal Weighting (⅓ Each Quality)"
+                ),
+            radial_range=radial_range,
+            show=show,
+        )
+
+
+class Anchor_CB_Companion_Fit_Global_Qualities_Radar_Plot(_Global_Qualities_Radar_Resolver):
+    """
+    Global directional anchor-companion radar analysis across the 3 qualities.
+    """
+
+    DEFAULT_AXIS_VALUE_COLUMNS = {
+        "Ground Duels": "ground_companion_fit_score_z_within_anchor",
+        "Aerial Duels": "aerial_companion_fit_score_z_within_anchor",
+        "Ball Passing": "ball_companion_fit_score_z_within_anchor",
+    }
+    DEFAULT_AXIS_RANK_COLUMNS = {
+        "Ground Duels": "ground_companion_rank_for_anchor",
+        "Aerial Duels": "aerial_companion_rank_for_anchor",
+        "Ball Passing": "ball_companion_rank_for_anchor",
+    }
+    DEFAULT_AXIS_RANK_Z_COLUMNS = {
+        "Ground Duels": None,
+        "Aerial Duels": None,
+        "Ball Passing": None,
+    }
+
+    GLOBAL_SCORE_COLUMN = "global_companion_fit_score_z_within_anchor"
+    GLOBAL_RANK_COLUMN = "global_companion_rank_for_anchor"
+    GLOBAL_RANK_Z_COLUMN = "global_companion_rank_for_anchor_z_score"
+
+    def __init__(
+        self,
+        *,
+        df_global_companion_fits: pd.DataFrame,
+        axis_value_columns: Optional[Mapping[str, str]] = None,
+        axis_rank_columns: Optional[Mapping[str, str]] = None,
+        axis_rank_z_columns: Optional[Mapping[str, str]] = None,
+        global_score_column: str = GLOBAL_SCORE_COLUMN,
+        global_rank_column: str = GLOBAL_RANK_COLUMN,
+        global_rank_z_column: str = GLOBAL_RANK_Z_COLUMN,
+    ) -> None:
+        self.df_global_companion_fits = df_global_companion_fits.copy()
+        self.global_score_column = str(global_score_column)
+        self.global_rank_column = str(global_rank_column)
+        self.global_rank_z_column = str(global_rank_z_column)
+        self._anchor_player_id: Optional[Any] = None
+        self._anchor_player_name: Optional[str] = None
+
+        axis_values = dict(self.DEFAULT_AXIS_VALUE_COLUMNS)
+        if axis_value_columns is not None:
+            axis_values.update({str(k): str(v) for k, v in axis_value_columns.items()})
+
+        axis_ranks = dict(self.DEFAULT_AXIS_RANK_COLUMNS)
+        if axis_rank_columns is not None:
+            axis_ranks.update({str(k): str(v) for k, v in axis_rank_columns.items()})
+
+        axis_rank_z = dict(self.DEFAULT_AXIS_RANK_Z_COLUMNS)
+        if axis_rank_z_columns is not None:
+            axis_rank_z.update(
+                {str(k): str(v) for k, v in axis_rank_z_columns.items()}
+            )
+
+        (
+            self.axis_value_columns,
+            self.axis_rank_columns,
+            self.axis_rank_z_columns,
+        ) = self._ensure_axis_mappings(
+            axis_value_columns=axis_values,
+            axis_rank_columns=axis_ranks,
+            axis_rank_z_columns=axis_rank_z,
+            context="Anchor_CB_Companion_Fit_Global_Qualities_Radar_Plot",
+        )
+
+    def _prepare_plot_df(self) -> pd.DataFrame:
+        required_columns = [
+            "anchor_player_id",
+            "anchor_player_name",
+            "partner_player_id",
+            "partner_player_name",
+            "pair_key",
+            self.global_score_column,
+            self.global_rank_column,
+            self.global_rank_z_column,
+        ] + list(self.axis_value_columns.values())
+
+        for maybe_col in self.axis_rank_columns.values():
+            if maybe_col is not None:
+                required_columns.append(maybe_col)
+        for maybe_col in self.axis_rank_z_columns.values():
+            if maybe_col is not None:
+                required_columns.append(maybe_col)
+
+        self._ensure_columns(
+            self.df_global_companion_fits,
+            required_columns,
+            "global companion-fit radar plotting dataframe",
+        )
+        return self.df_global_companion_fits.copy()
+
+    def _anchor_candidates(self, plot_df: pd.DataFrame) -> pd.DataFrame:
+        self._ensure_columns(
+            plot_df,
+            ["anchor_player_id", "anchor_player_name"],
+            "global companion-fit anchor resolution",
+        )
+        return plot_df[["anchor_player_id", "anchor_player_name"]].drop_duplicates()
+
+    def _resolve_anchor(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        Anchor_CB: Any = None,
+        Anchor_CB_ID: Any = None,
+    ) -> pd.Series:
+        candidates = self._anchor_candidates(plot_df)
+
+        if Anchor_CB is None and Anchor_CB_ID is None:
+            if self._anchor_player_name is not None:
+                cached_by_name = candidates[
+                    candidates["anchor_player_name"].map(self._normalize_text)
+                    == self._normalize_text(self._anchor_player_name)
+                ]
+                if not cached_by_name.empty:
+                    return cached_by_name.iloc[0]
+            return candidates.sort_values("anchor_player_name").iloc[0]
+
+        return self._resolve_entity(
+            candidates,
+            entity_value=Anchor_CB,
+            entity_id=Anchor_CB_ID,
+            id_col="anchor_player_id",
+            name_col="anchor_player_name",
+            entity_label="anchor CB",
+        )
+
+    def Initialize_Desired_Anchor_CB(
+        self,
+        *,
+        Anchor_CB: Any = None,
+        Anchor_CB_ID: Any = None,
+    ) -> pd.Series:
+        """
+        Resolve and cache the anchor CB used by subsequent companion plots.
+        """
+        plot_df = self._prepare_plot_df()
+        resolved_anchor = self._resolve_anchor(
+            plot_df,
+            Anchor_CB=Anchor_CB,
+            Anchor_CB_ID=Anchor_CB_ID,
+        )
+        self._anchor_player_id = resolved_anchor.get("anchor_player_id", None)
+        self._anchor_player_name = str(resolved_anchor["anchor_player_name"])
+        return resolved_anchor
+
+    def _build_anchor_plot_df(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        anchor_name: str,
+        anchor_id: Any = None,
+        top_n: Optional[int] = None,
+    ) -> pd.DataFrame:
+        if anchor_id is not None:
+            filtered = plot_df[plot_df["anchor_player_id"] == anchor_id].copy()
+            if filtered.empty:
+                filtered = plot_df[
+                    plot_df["anchor_player_name"].map(self._normalize_text)
+                    == self._normalize_text(anchor_name)
+                ].copy()
+        else:
+            filtered = plot_df[
+                plot_df["anchor_player_name"].map(self._normalize_text)
+                == self._normalize_text(anchor_name)
+            ].copy()
+
+        if filtered.empty:
+            raise ValueError(f"No companion-fit rows found for anchor CB '{anchor_name}'.")
+
+        filtered[self.global_rank_column] = pd.to_numeric(
+            filtered[self.global_rank_column],
+            errors="coerce",
+        )
+        filtered = filtered.sort_values(
+            [self.global_rank_column, "partner_player_name"],
+            ascending=[True, True],
+        ).reset_index(drop=True)
+
+        if top_n is not None:
+            if not isinstance(top_n, (int, np.integer)) or int(top_n) <= 0:
+                raise ValueError("top_n must be a positive integer or None.")
+            filtered = filtered.head(int(top_n)).copy().reset_index(drop=True)
+
+        return filtered
+
+    def _resolve_companion_row(
+        self,
+        plot_df: pd.DataFrame,
+        *,
+        Companion_CB: Any = None,
+        Companion_CB_ID: Any = None,
+        Companion_Rank: Optional[int] = None,
+    ) -> Optional[pd.Series]:
+        if Companion_CB is None and Companion_CB_ID is None and Companion_Rank is None:
+            return None
+
+        if Companion_Rank is not None:
+            if Companion_CB is not None or Companion_CB_ID is not None:
+                raise ValueError(
+                    "Please specify either Companion_Rank or Companion_CB/Companion_CB_ID, not both."
+                )
+            requested_rank = self._coerce_positive_rank(
+                Companion_Rank,
+                param_name="Companion_Rank",
+            )
+            rank_values = pd.to_numeric(
+                plot_df[self.global_rank_column],
+                errors="coerce",
+            )
+            matches = plot_df[rank_values == float(requested_rank)]
+            if matches.empty:
+                raise ValueError(
+                    f"No companion found at global rank #{requested_rank} in the current anchor sample."
+                )
+            if len(matches) > 1:
+                candidates = matches["partner_player_name"].astype(str).tolist()
+                raise ValueError(
+                    f"Multiple companions found for global rank #{requested_rank}: {', '.join(candidates)}"
+                )
+            return matches.iloc[0]
+
+        candidates = plot_df[["partner_player_id", "partner_player_name"]].drop_duplicates()
+        candidates = candidates.rename(
+            columns={"partner_player_id": "player.id", "partner_player_name": "player.name"}
+        )
+        resolved = self._resolve_entity(
+            candidates,
+            entity_value=Companion_CB,
+            entity_id=Companion_CB_ID,
+            id_col="player.id",
+            name_col="player.name",
+            entity_label="companion CB",
+        )
+        matches = plot_df[plot_df["partner_player_id"] == resolved["player.id"]]
+        if matches.empty:
+            raise ValueError(f"No companion fit found for '{Companion_CB}'.")
+        return matches.iloc[0]
+
+    @staticmethod
+    def _companion_key(row: pd.Series) -> str:
+        if "partner_player_id" in row.index and pd.notna(row["partner_player_id"]):
+            return str(row["partner_player_id"])
+        return str(row.get("partner_player_name", ""))
+
+    def _build_profile(
+        self,
+        row: pd.Series,
+        *,
+        trace_name: str,
+        color_rgb: Tuple[int, int, int],
+        line_dash: str = "solid",
+        fill_opacity: float = 0.18,
+    ) -> Dict[str, Any]:
+        (
+            axis_values,
+            axis_rank_values,
+            axis_hover,
+            axis_rank_hover,
+        ) = self._build_axis_hover_lines(
+            row=row,
+            axis_value_columns=self.axis_value_columns,
+            axis_rank_columns=self.axis_rank_columns,
+            axis_rank_z_columns=self.axis_rank_z_columns,
+            global_score_column=self.global_score_column,
+            global_rank_column=self.global_rank_column,
+            global_rank_z_column=self.global_rank_z_column,
+        )
+        return {
+            "axis_values": axis_values,
+            "axis_rank_values": axis_rank_values,
+            "axis_hover": axis_hover,
+            "axis_rank_hover": axis_rank_hover,
+            "trace_name": trace_name,
+            "color_rgb": color_rgb,
+            "line_dash": line_dash,
+            "fill_opacity": fill_opacity,
+        }
+
+    def _build_average_profile(self, plot_df: pd.DataFrame) -> pd.Series:
+        average_data: Dict[str, Any] = {
+            "partner_player_id": -1,
+            "partner_player_name": "Companion Pool Average",
+        }
+        mean_columns = (
+            list(self.axis_value_columns.values())
+            + [
+                self.global_score_column,
+                self.global_rank_column,
+                self.global_rank_z_column,
+            ]
+            + [col for col in self.axis_rank_columns.values() if col is not None]
+            + [col for col in self.axis_rank_z_columns.values() if col is not None]
+        )
+        for col in dict.fromkeys(mean_columns):
+            average_data[col] = pd.to_numeric(plot_df[col], errors="coerce").mean()
+        return pd.Series(average_data)
+
+    def Plot_Companion_of_Anchor_CB(
+        self,
+        *,
+        Anchor_CB: Any = None,
+        Anchor_CB_ID: Any = None,
+        Companion_CB: Any = None,
+        Companion_CB_ID: Any = None,
+        Companion_Rank: Optional[int] = None,
+        Companion_Ranks: Optional[Sequence[int]] = None,
+        include_best: bool = True,
+        include_worst: bool = False,
+        include_anchor_CB_pool_average: bool = False,
+        top_n: Optional[int] = None,
+        radial_range: Optional[Sequence[float]] = None,
+        show: bool = True,
+    ) -> Optional[go.Figure]:
+        """
+        Plot directional global companion fits for one anchor CB.
+        """
+        plot_df = self._prepare_plot_df()
+        resolved_anchor = self._resolve_anchor(
+            plot_df,
+            Anchor_CB=Anchor_CB,
+            Anchor_CB_ID=Anchor_CB_ID,
+        )
+        self._anchor_player_id = resolved_anchor.get("anchor_player_id", None)
+        self._anchor_player_name = str(resolved_anchor["anchor_player_name"])
+
+        anchor_plot_df = self._build_anchor_plot_df(
+            plot_df,
+            anchor_name=self._anchor_player_name,
+            anchor_id=self._anchor_player_id,
+            top_n=top_n,
+        )
+
+        profiles: List[Dict[str, Any]] = []
+        used_keys = set()
+        color_index = 0
+
+        selected_rows: List[pd.Series] = []
+        if Companion_Ranks is not None:
+            if Companion_Rank is not None:
+                raise ValueError(
+                    "Please provide either Companion_Rank or Companion_Ranks, not both."
+                )
+            for rank_value in self._coerce_unique_positive_ranks(
+                Companion_Ranks,
+                param_name="Companion_Ranks",
+            ):
+                row = self._resolve_companion_row(
+                    anchor_plot_df,
+                    Companion_Rank=rank_value,
+                )
+                if row is not None:
+                    selected_rows.append(row)
+
+        row_from_single_selector = self._resolve_companion_row(
+            anchor_plot_df,
+            Companion_CB=Companion_CB,
+            Companion_CB_ID=Companion_CB_ID,
+            Companion_Rank=Companion_Rank,
+        )
+        if row_from_single_selector is not None:
+            selected_rows.append(row_from_single_selector)
+
+        # If top_n is requested without explicit selectors, plot all top-N companions.
+        # This is the most natural analysis flow for "show me the top N for this anchor".
+        if (
+            top_n is not None
+            and Companion_CB is None
+            and Companion_CB_ID is None
+            and Companion_Rank is None
+            and Companion_Ranks is None
+        ):
+            selected_rows.extend([row for _, row in anchor_plot_df.iterrows()])
+
+        for row in selected_rows:
+            key = self._companion_key(row)
+            if key in used_keys:
+                continue
+            used_keys.add(key)
+            profiles.append(
+                self._build_profile(
+                    row,
+                    trace_name=self._trace_label(
+                        entity_name=f"{self._anchor_player_name} + {row['partner_player_name']}",
+                        global_score=row[self.global_score_column],
+                        global_rank=row[self.global_rank_column],
+                    ),
+                    color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    line_dash=self.TRACE_DASH_STYLES[
+                        color_index % len(self.TRACE_DASH_STYLES)
+                    ],
+                )
+            )
+            color_index += 1
+
+        if include_best:
+            best_row = anchor_plot_df.sort_values(
+                [self.global_score_column, "partner_player_name"],
+                ascending=[False, True],
+            ).iloc[0]
+            key = self._companion_key(best_row)
+            if key not in used_keys:
+                used_keys.add(key)
+                profiles.append(
+                    self._build_profile(
+                        best_row,
+                        trace_name=self._trace_label(
+                            entity_name=f"{self._anchor_player_name} + {best_row['partner_player_name']} (Best)",
+                            global_score=best_row[self.global_score_column],
+                            global_rank=best_row[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    )
+                )
+                color_index += 1
+
+        if include_worst:
+            worst_row = anchor_plot_df.sort_values(
+                [self.global_score_column, "partner_player_name"],
+                ascending=[True, True],
+            ).iloc[0]
+            key = self._companion_key(worst_row)
+            if key not in used_keys:
+                used_keys.add(key)
+                profiles.append(
+                    self._build_profile(
+                        worst_row,
+                        trace_name=self._trace_label(
+                            entity_name=f"{self._anchor_player_name} + {worst_row['partner_player_name']} (Worst)",
+                            global_score=worst_row[self.global_score_column],
+                            global_rank=worst_row[self.global_rank_column],
+                        ),
+                        color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                    )
+                )
+                color_index += 1
+
+        if include_anchor_CB_pool_average:
+            average_row = self._build_average_profile(anchor_plot_df)
+            profiles.append(
+                self._build_profile(
+                    average_row,
+                    trace_name=self._trace_label(
+                        entity_name=f"{self._anchor_player_name}'s Companion Pool Average",
+                        global_score=average_row[self.global_score_column],
+                        global_rank=average_row[self.global_rank_column],
+                    ),
+                    color_rgb=self.TRACE_COLORS[color_index % len(self.TRACE_COLORS)],
+                )
+            )
+
+        if not profiles:
+            raise ValueError(
+                "No companion profiles selected. Please choose a companion selector or enable best/worst/average overlays."
+            )
+
+        return self._plot_profiles(
+            profiles=profiles,
+            title=(
+                f"Global Anchor CB-Companion Fits' Radar Distributions   ->   {self._anchor_player_name} acting as the Anchor CB "
+                "<br> (Ground Duels + Aerial Duels + Ball Passing)"
+            ),
+            subtitle=(
+                f"Strict 3-Quality Intersection Companion Sample Size: {len(anchor_plot_df)} Anchor -> Companion Pairs (Within {self._anchor_player_name}'s Sample)   |   Equal Weighting (⅓ Each Quality)"
+                ),
+            radial_range=radial_range,
+            show=show,
+        )
+
+
+__all__ = [
+    "Single_CB_Global_Qualities_Radar_Plot",
+    "CB_Pair_Global_Qualities_Radar_Plot",
+    "Anchor_CB_Companion_Fit_Global_Qualities_Radar_Plot",
+]
+
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------------------------------
 
 
 
