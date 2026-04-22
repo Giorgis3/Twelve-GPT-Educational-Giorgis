@@ -224,7 +224,8 @@ class DistributionPlot(Visual):
             
 
     def add_data_point(
-        self, ser_plot, plots, name, hover="", hover_string="", text=None
+        self, ser_plot, plots, name, hover="", hover_string="", text=None,
+        annotation_y_offset=0.4, show_annotation=True,
     ):
         if text is None:
             text = [name]
@@ -260,25 +261,53 @@ class DistributionPlot(Visual):
             )
             legend = False
 
+            if show_annotation:
+                self.fig.add_annotation(
+                    x=0,
+                    y=i + annotation_y_offset,
+                    text=self.annotation_text.format(
+                        metric_name=metric_name,
+                        data=ser_plot[col],
+                    ),
+                    showarrow=False,
+                    font={
+                        "color": rgb_to_color(self.white),
+                        "family": "Gilroy-Light",
+                        "size": 12 * self.font_size_multiplier,
+                    },
+                )
+
+    def add_pair_annotations(self, ser_a, ser_b, plots="", color_a=None, color_b=None):
+        """Render  'val_a  |  Metric Name  |  val_b'  centred on each row."""
+        if color_a is None:
+            color_a = self.white
+        if color_b is None:
+            color_b = self.bright_yellow
+
+        def rgba(c):
+            return rgb_to_color(c)
+
+        for i, col in enumerate(self.columns):
+            metric_name = format_metric(col)
+            val_a = ser_a[col + plots]
+            val_b = ser_b[col + plots]
+            text = (
+                f"<span style='color:{rgba(color_a)}'>{val_a:.2f}</span>"
+                f"<span style='color:{rgba(self.gray)}'> &nbsp;|&nbsp; </span>"
+                f"<span style='color:{rgba(self.white)}'>{metric_name}</span>"
+                f"<span style='color:{rgba(self.gray)}'> &nbsp;|&nbsp; </span>"
+                f"<span style='color:{rgba(color_b)}'>{val_b:.2f}</span>"
+            )
             self.fig.add_annotation(
                 x=0,
                 y=i + 0.4,
-                text=self.annotation_text.format(
-                    metric_name=metric_name,
-                    data=(
-                        ser_plot[col]
-                        # if self.plot_type == "scout"
-                        # else ser_plot[col + hover]
-                    ),
-                ),
+                text=text,
                 showarrow=False,
                 font={
-                    "color": rgb_to_color(self.white),
                     "family": "Gilroy-Light",
                     "size": 12 * self.font_size_multiplier,
                 },
             )
-
 
     def add_player(self, player: Union[Player, Country], n_group, metrics):
 
