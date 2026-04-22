@@ -23,6 +23,7 @@ from classes.description import (
     PlayerDescription,
     CountryDescription,
     PersonDescription,
+    DefenderDescription,
 )
 from classes.embeddings import PlayerEmbeddings, CountryEmbeddings, PersonEmbeddings
 
@@ -47,6 +48,8 @@ class Chat:
             st.session_state.chat_state = state
         if isinstance(self, PlayerChat):
             self.name = self.player.name
+        elif isinstance(self, CBPairingChat):
+            self.name = f"{self.player_a.name} & {self.player_b.name}"
         elif isinstance(self, PersonChat):
             self.name = self.person.name
         else:
@@ -254,6 +257,139 @@ class Chat:
         """
         st.session_state.messages_to_display = self.messages_to_display
         st.session_state.chat_state = self.state
+
+
+class SingleCBChat(Chat):
+    def __init__(self, chat_state_hash, player, df, state="empty"):
+        self.embeddings = PlayerEmbeddings()
+        self.player = player
+        self.df = df
+        self.name = player.name
+        super().__init__(chat_state_hash, state=state)
+
+    def get_input(self):
+        """Get input from streamlit."""
+        if x := st.chat_input(
+            placeholder=f"Ask about {self.player.name}'s defensive profile..."
+        ):
+            if len(x) > 500:
+                st.error(
+                    f"Your message is too long ({len(x)} characters). Please keep it under 500 characters."
+                )
+            self.handle_input(x, stream=True)
+
+    def instruction_messages(self):
+        """Instruction for the agent."""
+        return [
+            {"role": "system", "content": "You are a defensive tactics analyst specializing in centre-back evaluation."},
+            {
+                "role": "user",
+                "content": (
+                    "After these messages you will be interacting with a user analyzing a single centre-back. "
+                    "You will receive relevant information about the player's ground duel quality metrics and then be asked to provide a response. "
+                    "When responding to the user, speak directly to them and focus on this individual player's defensive profile. "
+                    "You are a football analyst specialising in evaluating centre backs."
+                    "You provide clear, concise, and data-driven descriptions of individual defenders based on their ground duel performance."
+                    "You interpret statistical summaries to describe a player’s defensive style, strengths, weaknesses, and overall effectiveness. "
+                ),
+            },
+        ]
+
+    def get_relevant_info(self, query):
+        """Get relevant information about the player."""
+        if query == "":
+            query = self.visible_messages[-1]["content"]
+
+        ret_val = f"Here is a ground duel quality analysis of {self.player.name}:\n\n"
+        desc = DefenderDescription(self.player)
+        ret_val += desc.synthesize_text() + "\n\n"
+
+        results = self.embeddings.search(query, top_n=3)
+        ret_val += "Here is relevant information for answering the question:\n"
+        ret_val += "\n".join(results["assistant"].to_list())
+
+        ret_val += (
+            f"\n\nIf none of this information is relevant to the user's query, "
+            f"remind them that this chat can answer questions about {self.player.name}'s "
+            f"defensive quality, ground duel metrics, and how they compare to other centre-backs."
+        )
+
+        return ret_val
+
+
+class CBPairingChat(Chat):
+    def __init__(self, chat_state_hash, player_a, player_b, df, state="empty"):
+        self.embeddings = PlayerEmbeddings()
+        self.player_a = player_a
+        self.player_b = player_b
+        self.df = df
+        self.name = f"{player_a.name} & {player_b.name}"
+        super().__init__(chat_state_hash, state=state)
+
+    def get_input(self):
+        """Get input from streamlit."""
+        if x := st.chat_input(
+            placeholder=f"Ask about the {self.player_a.name} and {self.player_b.name} pairing..."
+        ):
+            if len(x) > 500:
+                st.error(
+                    f"Your message is too long ({len(x)} characters). Please keep it under 500 characters."
+                )
+            self.handle_input(x, stream=True)
+
+    def instruction_messages(self):
+        """Instruction for the agent."""
+        first_messages = [
+            {"role": "system", "content": "You are a defensive tactics analyst specializing in center-back partnerships."},
+            {
+                "role": "user",
+                "content": (
+                    "After these messages you will be interacting with a user analyzing a center-back pairing. "
+                    f"The user has selected {self.player_a.name} and {self.player_b.name} as a defensive partnership. "
+                    "You will receive relevant information about both players' ground duel quality metrics and then be asked to provide a response. "
+                    "All user messages will be prefixed with 'User:' and enclosed with ```. "
+                    "When responding to the user, speak directly to them and focus on how the two defenders complement or contrast with each other as a pairing. "
+                    "Use the information provided before the query to provide 2-3 sentence answers about the partnership dynamics. "
+                    "Do not deviate from this information or provide additional information that is not in the text returned by the functions."
+                ),
+            },
+        ]
+        return first_messages
+
+    def get_relevant_info(self, query):
+        """Get relevant information about both players in the pairing."""
+        if query == "":
+            query = self.visible_messages[-1]["content"]
+
+        ret_val = "Here is a comparison of the two center-backs in the pairing:\n\n"
+        
+        # Add description of both players
+        ret_val += f"**{self.player_a.name}:**\n"
+        desc_a = DefenderDescription(self.player_a)
+        ret_val += desc_a.synthesize_text() + "\n\n"
+        
+        ret_val += f"**{self.player_b.name}:**\n"
+        desc_b = DefenderDescription(self.player_b)
+        ret_val += desc_b.synthesize_text() + "\n\n"
+
+        # Add partnership context
+        ret_val += f"**Partnership Context:**\n"
+        ret_val += f"These two players can be analyzed as a defensive pairing in terms of complementary strengths and potential weaknesses. "
+        ret_val += f"Consider how their duel quality metrics might work together in a partnership.\n\n"
+
+        # Search for relevant information using embeddings
+        results = self.embeddings.search(query, top_n=3)
+        ret_val += "Here is relevant information for answering the question:\n"
+        ret_val += "\n".join(results["assistant"].to_list())
+
+        ret_val += (
+            f"\n\nIf none of this information is relevant to the user's query, "
+            f"remind them that this chat can answer questions about the defensive partnership between "
+            f"{self.player_a.name} and {self.player_b.name}, including their complementary strengths, "
+            f"how they compare to each other, and their combined defensive quality."
+        )
+
+        return ret_val
 
 
 class PlayerChat(Chat):

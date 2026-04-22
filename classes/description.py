@@ -346,6 +346,242 @@ class PlayerDescription(Description):
         return [{"role": "user", "content": prompt}]
 
 
+class DefenderDescription(Description):
+    output_token_limit = 150
+
+    @property
+    def gpt_examples_path(self):
+        return f"{self.gpt_examples_base}/Defenders_example.xlsx"  # Can reuse or create Defender_examples.xlsx
+
+    @property
+    def describe_paths(self):
+        return [f"{self.describe_base}/Defender_Pair.xlsx"]
+
+    def __init__(self, player: Player):
+        self.player = player
+        super().__init__()
+
+    def get_intro_messages(self) -> List[Dict[str, str]]:
+        """
+        Constant introduction messages for the assistant.
+
+        Returns:
+        List of dicts with keys "role" and "content".
+        """
+        intro = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a defensive tactics analyst. "
+                    "You are a football analyst specialising in evaluating centre backs. "
+                    "You provide concise, data-driven descriptions of defenders based on ground duel quality performance."
+                    "You use the information given to you from the data and answers "
+                    "When relevant, you also analyse how two centre backs complement each other as a pair, focusing on balance, roles, and defensive interaction."
+                    "You base your analysis only on the information provided and do not introduce external knowledge."
+                ),
+            },
+        ]
+        if len(self.describe_paths) > 0:
+            intro += [
+                {
+                    "role": "user",
+                    "content": "First, could you answer some questions about ground duel quality for me?",
+                },
+                {"role": "assistant", "content": "Sure!"},
+            ]
+
+        return intro
+
+    def synthesize_text(self):
+        player = self.player
+        description = f"Here is a ground duel quality analysis of {player.name}. \n\n"
+
+        # List the z-score metrics for ground duels
+        metrics = [
+            "z_possession_win_rate",
+            "z_duel_success_rate",
+            "z_interceptions_per90",
+            "z_duels_per90",
+            "z_discipline",
+            "z_card_discipline"
+        ]
+
+        metric_labels = {
+        "z_possession_win_rate": "possession win rate",
+        "z_duel_success_rate": "duel success rate",
+        "z_interceptions_per90": "interceptions per 90",
+        "z_duels_per90": "duels per 90",
+        "z_discipline": "discipline",
+        "z_card_discipline": "card discipline",
+}
+
+        for metric in metrics:
+            if metric in player.ser_metrics:
+                description += f"{player.name} was "
+                description += sentences.describe_level(player.ser_metrics[metric])
+                description += f" in {metric_labels[metric]} compared to other centre-backs in the same league. "
+
+        return description
+
+    def get_prompt_messages(self):
+        prompt = (
+            "Please use the statistical description enclosed with ``` to do the following:\n\n"
+            f"First, write a 3-sentence summary of {self.player.name}’s ground duel quality. "
+            "Then answer each of the following questions. Use only the data provided.\n\n"
+            f"Q1 [VALIDATION — metric labels]: For each of the 6 ground duel metrics, state the exact qualitative level used to describe {self.player.name} "
+            "(choose strictly from: outstanding, excellent, good, average, below average, poor). "
+            "Format as a bullet list: ‘- <metric name>: <level>’.\n\n"
+            f"Q2: What is {self.player.name}’s overall defensive profile? (1-2 sentences)\n\n"
+            f"Q3: What are {self.player.name}’s main strengths in ground duels? (1-2 sentences)\n\n"
+            f"Q4: What are {self.player.name}’s weaknesses or areas for improvement? (1-2 sentences)\n\n"
+            f"Q5: How active and aggressive is {self.player.name} in defensive duels? (1-2 sentences)\n\n"
+            f"Q6: How disciplined is {self.player.name} in terms of fouls and card management? (1-2 sentences)\n\n"
+            f"Q7: How does {self.player.name} compare to other centre-backs in the league? (1-2 sentences)\n\n"
+            f"Q8: What is a centre back?\n\n"
+            f"Q9: What is ground duel quality?\n\n"
+            f"Q10: What metrics do we use to evaluate a centre back’s ground duel quality?\n\n"
+            "Format your response as:\n"
+            "Summary: [3-sentence summary]\n\n"
+            "Q: [question]\nA: [answer]\n\n"
+            "(Q1 answer should be a bullet list of metric: level pairs)\n"
+        )
+        return [{"role": "user", "content": prompt}]
+
+
+class CBPairingDescription(Description):
+    output_token_limit = 300
+
+    @property
+    def gpt_examples_path(self):
+        return [] if not self.use_wordalisation else f"{self.gpt_examples_base}/Defenders_pair_example.xlsx"
+
+    @property
+    def describe_paths(self):
+        return [] if not self.use_wordalisation else [f"{self.describe_base}/Defender_Pair.xlsx"]
+
+    def __init__(self, player_a: Player, player_b: Player, df=None, use_wordalisation=True):
+        self.player_a = player_a
+        self.player_b = player_b
+        self.df = df
+        self.use_wordalisation = use_wordalisation
+        super().__init__()
+
+    def get_intro_messages(self) -> List[Dict[str, str]]:
+        intro = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a football analyst specialising in centre-back pair evaluation on ground duels and make replacements when asked. "
+                    "Use only the statistical descriptions provided. "
+                    "Base every conclusion directly on the listed metrics: possession win rate, duel success rate, "
+                    "interceptions per 90, duels per 90, discipline, and card discipline. "
+                    "Do not introduce external knowledge or infer qualities not clearly supported by the data. "
+                    "If both players are weak, passive, or risky in the same area, state that clearly. "
+                    "Write concise and grounded football interpretations."
+                ),
+            },
+        ]
+        if len(self.describe_paths) > 0:
+            intro += [
+                {
+                    "role": "user",
+                    "content": "First, could you answer some questions about ground duel quality for me?",
+                },
+                {"role": "assistant", "content": "Sure!"},
+            ]
+        return intro
+
+    def synthesize_text(self) -> str:
+        metrics = [
+            "z_possession_win_rate",
+            "z_duel_success_rate",
+            "z_interceptions_per90",
+            "z_duels_per90",
+            "z_discipline",
+            "z_card_discipline",
+        ]
+        metric_labels = {
+            "z_possession_win_rate": "possession win rate",
+            "z_duel_success_rate": "duel success rate",
+            "z_interceptions_per90": "interceptions per 90",
+            "z_duels_per90": "duels per 90",
+            "z_discipline": "discipline",
+            "z_card_discipline": "card discipline",
+        }
+
+        description = (
+            f"Here is a ground duel quality description of centre backs {self.player_a.name} and "
+            f"{self.player_b.name} as a defensive pairing.\n\n"
+        )
+
+        for player in [self.player_a, self.player_b]:
+            description += f"{player.name}:\n"
+            for metric in metrics:
+                if metric in player.ser_metrics:
+                    level = sentences.describe_level(player.ser_metrics[metric])
+                    description += f"He is {level} in {metric_labels[metric]} compared to other centre backs.\n"
+            description += "\n"
+
+        # If the full dataset is available, append the top-15 replacement candidates.
+        # Candidates are ranked by player_a's weakest metrics — the replacement for B
+        # must cover A's gaps so the new pair becomes balanced.
+        if self.df is not None:
+            current_names = {self.player_a.name, self.player_b.name}
+            others = self.df[~self.df["player.name"].isin(current_names)].copy()
+            z_cols = [m for m in metrics if m in others.columns]
+
+            # Find the 2 weakest metrics for player_a
+            a_scores = {m: self.player_a.ser_metrics[m] for m in z_cols if m in self.player_a.ser_metrics}
+            weak_metrics = sorted(a_scores, key=a_scores.get)[:2]
+            if not weak_metrics:
+                weak_metrics = z_cols[:2]
+
+            # Rank candidates by their strength in player_a's weak areas
+            others["_gap_score"] = others[weak_metrics].mean(axis=1)
+            top = others.nlargest(6, "_gap_score")
+
+            description += (
+                f"Other available centre-backs in the league "
+                f"(ranked by strength in {self.player_a.name}'s weakest areas: "
+                f"{', '.join(metric_labels[m] for m in weak_metrics)}):\n"
+            )
+            for _, row in top.iterrows():
+                name = row["player.name"]
+                levels = ", ".join(
+                    f"{metric_labels[m]}: {sentences.describe_level(row[m])}"
+                    for m in metrics if m in row.index and pd.notna(row[m])
+                )
+                description += f"- {name}: {levels}\n"
+            description += "\n"
+
+        return description
+
+    def get_prompt_messages(self) -> List[Dict[str, str]]:
+        a, b = self.player_a.name, self.player_b.name
+        replacement_suffix = (
+            f"From the list of available centre-backs provided, name the single best specific replacement and explain in 1-2 sentences why they address the gap.\n\n"
+            if self.df is not None else
+            "Describe only the ideal profile (no player data available for specific names).\n\n"
+        )
+        prompt = (
+            "Please use only the statistical description enclosed with ``` to analyse this centre-back pairing.\n\n"
+            f"First, write a 3-sentence summary of the partnership between {a} and {b}.\n\n"
+            "Sentence 1 must describe the overall defensive profile of the pair as a unit (do not describe players individually).\n"
+            "Sentence 2 should explain how their qualities complement or overlap, referring to both players together.\n"
+            "Sentence 3 should state the main weakness or risk of the pairing based on their shared or contrasting metrics.\n\n"
+            "Do not write separate descriptions of each player. Focus on the pairing as a single defensive unit.\n\n"
+            "Ensure that each sentence is directly supported by the metrics provided (duel success rate, duels per 90, interceptions per 90, possession win rate, discipline, and card discipline).\n\n"
+            "Then answer each of the following questions. Use only the data provided.\n\n"
+            f"Q1 [VALIDATION — metric comparison]: For each metric, state which player scores higher and list both levels. "
+            f"Format as a bullet list: '- <metric>: {a} (<level>) vs {b} (<level>)'.\n\n"
+            f"[REPLACEMENT]: We are replacing {b}. Based on {a}'s weaknesses, describe the ideal replacement profile "
+            f"— which metrics must the new player be strong in to cover {a}'s gaps and create a balanced pair? "
+            + replacement_suffix +
+            "Format your response as:\nSummary: [3-4 sentence summary]\n\nQ: [question]\nA: [answer]\n"
+        )
+        return [{"role": "user", "content": prompt}]
+
+
 class CountryDescription(Description):
     output_token_limit = 150
 
