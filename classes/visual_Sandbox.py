@@ -339,7 +339,15 @@ class DistributionPlot(Visual):
         # State used for dynamic multi-entity annotations rendered from add_data_point.
         self._multi_annotation_items = []
         self._multi_annotation_indices = []
+        self._legend_group_index = 0
         super().__init__(*args, **kwargs)
+        # Allow users to click legend items to hide/show highlighted profiles.
+        self.fig.update_layout(
+            legend=dict(
+                itemclick="toggle",
+                groupclick="togglegroup",
+            )
+        )
         if labels is not None:
             self._setup_axes(labels)
         else:
@@ -500,6 +508,8 @@ class DistributionPlot(Visual):
             text = [text]
         # We add one trace per metric, but keep only a single legend entry.
         legend = True
+        legend_group = f"distribution_highlight_{self._legend_group_index}"
+        self._legend_group_index += 1
         color, marker = self._next_marker_style()
 
         for i, col in enumerate(self.columns):
@@ -524,6 +534,7 @@ class DistributionPlot(Visual):
                     customdata=[ser_plot[col + hover]],
                     name=name,
                     showlegend=legend,
+                    legendgroup=legend_group,
                 )
             )
             legend = False
