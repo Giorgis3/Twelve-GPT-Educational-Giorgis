@@ -24,6 +24,8 @@ from classes.description import (
     CountryDescription,
     PersonDescription,
     DefenderDescription,
+    CBPairingDescription,
+    CBReplacementDescription,
 )
 from classes.embeddings import PlayerEmbeddings, CountryEmbeddings, PersonEmbeddings
 
@@ -290,7 +292,7 @@ class SingleCBChat(Chat):
                     "When responding to the user, speak directly to them and focus on this individual player's defensive profile. "
                     "You are a football analyst specialising in evaluating centre backs."
                     "You provide clear, concise, and data-driven descriptions of individual defenders based on their ground duel performance."
-                    "You interpret statistical summaries to describe a player’s defensive style, strengths, weaknesses, and overall effectiveness. "
+                    "You interpret statistical summaries to describe a player's defensive style, strengths, weaknesses, and overall effectiveness. "
                 ),
             },
         ]
@@ -390,6 +392,403 @@ class CBPairingChat(Chat):
         )
 
         return ret_val
+
+
+class CBAnalystChat(Chat):
+    """
+    Unified CB analyst chat. Uses OpenAI tool-calling so the LLM acts as a
+    router, selecting one of three tools based on the user's question.
+
+    All three tools are always available. The system prompt guides the LLM
+    to use only pair/replacement tools when player_b is provided.
+    """
+
+    _TOOLS = [
+        {
+            "type": "function",
+            "name": "get_player_summary",
+            "description": (
+                "Returns a full wordalised profile of Player A across ground duel, "
+                "aerial duel, and ball-playing quality with sub-metric commentary. "
+                "Use for questions about a single player's strengths, weaknesses, or overall rating."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "type": "function",
+            "name": "get_pair_evaluation",
+            "description": (
+                "Evaluates how Player A and Player B work together as a CB pairing. "
+                "Covers complementarity, shared weaknesses, and combined profile. "
+                "Use for questions about how two players work together or whether they are too similar."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "type": "function",
+            "name": "get_better_partner",
+            "description": (
+                "Suggests the best alternative CB partners to complement Player A. "
+                "Identifies Player A's weakest quality dimension and ranks candidates "
+                "strongest in that area. Use for questions about finding a better partner or replacement."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "quality_focus": {
+                        "type": "string",
+                        "enum": ["ground_duel", "aerial_duel", "ball_playing"],
+                        "description": (
+                            "Which quality dimension to prioritise. "
+                            "Infer from the query if mentioned; otherwise omit to auto-detect."
+                        ),
+                    }
+                },
+                "required": [],
+            },
+        },
+    ]
+
+    _DESCRIBE_PATH    = "data/describe/Defender_Pair.xlsx"
+    _GPT_EXAMPLE_PATH = "data/gpt_examples/Defenders_pair_example.xlsx"
+
+    def __init__(self, chat_state_hash, player_a, player_b=None,
+                 gd_df=None, ad_df=None, bp_df=None, state="empty"):
+        self.player_a = player_a
+        self.player_b = player_b
+
+        # Pre-load Q&A domain knowledge (wordalisation step 2)
+        try:
+            df = pd.read_excel(self._DESCRIBE_PATH)
+            self._domain_qa = [
+                msg
+                for _, row in df.iterrows()
+                if pd.notna(row.get("user")) and pd.notna(row.get("assistant"))
+                for msg in [
+                    {"role": "user",      "content": str(row["user"])},
+                    {"role": "assistant", "content": str(row["assistant"])},
+                ]
+            ]
+        except FileNotFoundError:
+            self._domain_qa = []
+
+        # Build merged all-player DataFrame with all z-score columns
+        self.all_players_df = (
+            gd_df[["player.id", "player.name", "duel_quality",
+                   "z_duel_success_rate", "z_possession_win_rate",
+                   "z_discipline", "z_card_discipline",
+                   "z_duels_per90", "z_interceptions_per90"]]
+            .merge(
+                ad_df[["player.id", "aerial_duel_quality",
+                       "z_aerial_duel_success_rate", "z_aerial_duels_per90",
+                       "z_aerial_won_duel_per90"]],
+                on="player.id", how="inner",
+            )
+            .merge(
+                bp_df[["player.id", "ball_playing_quality",
+                       "z_Accuracy_Adjusted_Risk_per_Pass", "z_xT_per_Pass",
+                       "z_FT_Entry_Passes_per_90", "z_xT_via_Carries_per_90"]],
+                on="player.id", how="inner",
+            )
+        )
+
+        self.name = (
+            f"{player_a.name} & {player_b.name}"
+            if player_b is not None
+            else player_a.name
+        )
+        super().__init__(chat_state_hash, state=state)
+
+    def get_input(self):
+        placeholder = (
+            f"Ask about {self.player_a.name} & {self.player_b.name}..."
+            if self.player_b is not None
+            else f"Ask about {self.player_a.name}..."
+        )
+        if x := st.chat_input(placeholder=placeholder):
+            if len(x) > 500:
+                st.error("Message too long — keep it under 500 characters.")
+            else:
+                self.handle_input(x, stream=True)
+
+    def instruction_messages(self):
+        if self.player_b is None:
+            context = (
+                f"The user is analysing {self.player_a.name} as an individual centre-back. "
+                "Only get_player_summary is relevant — always use it to answer questions about this player. "
+                "Do not call get_pair_evaluation or get_better_partner as no second player is selected."
+            )
+        else:
+            context = (
+                f"Player A is {self.player_a.name}. Player B is {self.player_b.name}. "
+                "Use get_player_summary for questions about an individual player's profile. "
+                "Use get_pair_evaluation for questions about how they work together. "
+                "Use get_better_partner for questions about finding a better partner or replacement."
+            )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the Centre-Back Pairing Analyst. "
+                    "You answer ONLY questions about these metrics: "
+                    "ground duel quality, aerial duel quality, and ball-playing quality, "
+                    "including their sub-metrics (duel success rate, possession win rate, "
+                    "discipline, aerial success rate, pass safety, xT per pass, etc.). "
+                    "\n\n**When to use tools:**\n"
+                    "- Call a tool when asked about a SPECIFIC PLAYER's statistics, profile, strengths, weaknesses, or ratings.\n"
+                    "- Answer directly WITHOUT tools for GENERAL questions about metric definitions, concepts, or how analysis works (e.g., 'what is a ground duel?', 'how do you measure aerial quality?').\n"
+                    "\n\n"
+                    "**When answering:**\n"
+                    "- If a 'Pre-written answer from wordalisation' is provided in the context, use similar phrasing.\n"
+                    "- If a tool was called, combine the statistical data with any 'Relevant wordalisation context' to explain WHAT the metrics mean.\n"
+                    "- Always use the wordalisation definitions when describing qualities and sub-metrics.\n"
+                    "- Answer in 3-4 concise sentences that blend data with conceptual explanations.\n"
+                    "- If the user asks anything outside these metrics, respond with: "
+                    "'I can only answer questions about on-pitch metrics for Defenders: ground duels, aerial duels, "
+                    "and ball playing. Please ask about one of those.'\n\n"
+                    + context
+                ),
+            }
+        ]
+        if self._domain_qa:
+            messages += [
+                {"role": "user",      "content": "First, could you answer some questions about CB analysis for me?"},
+                {"role": "assistant", "content": "Sure!"},
+            ] + self._domain_qa
+        return messages
+
+    def handle_input(self, input, reasoning_effort=None, temperature=1, stream=False):
+        """Two-pass tool-use loop: LLM selects tool → execute → LLM generates answer."""
+        messages = self.instruction_messages() + self.messages_to_display.copy()
+        self.messages_to_display.append({"role": "user", "content": input})
+        
+        # Get relevant wordalisation info for generic questions
+        relevant_info = self.get_relevant_info(input)
+        
+        if relevant_info:
+            # Inject wordalisation answer as context
+            messages.append({"role": "user", "content": f"{relevant_info}\n\nUser question: {input}"})
+        else:
+            messages.append({"role": "user", "content": input})
+
+        messages = [m for m in messages if isinstance(m.get("content"), str)]
+
+        if USE_GEMINI:
+            # Gemini path: no tool-calling support — call the most relevant tool directly
+            default_tool = (
+                "get_player_summary" if self.player_b is None else "get_pair_evaluation"
+            )
+            tool_result = self._call_tool(default_tool, {})
+            messages.append({"role": "user", "content": f"Statistical context: {tool_result}\n\nUser: {input}"})
+            import google.generativeai as genai
+            from utils.gemini import convert_messages_format
+            genai.configure(api_key=GEMINI_API_KEY)
+            converted = convert_messages_format(messages)
+            model = genai.GenerativeModel(
+                model_name=GEMINI_CHAT_MODEL,
+                system_instruction=converted["system_instruction"],
+            )
+            chat = model.start_chat(history=converted["history"])
+            response = chat.send_message(content=converted["content"])
+            answer = response.text
+        else:
+            client = OpenAI(api_key=GPT_KEY, base_url=GPT_BASE)
+
+            # Pass 1 — LLM selects a tool
+            resp1 = client.responses.create(
+                model=GPT_CHAT_MODEL,
+                input=messages,
+                tools=self._TOOLS,
+            )
+
+            # Check if a tool was called
+            tool_call = next(
+                (item for item in resp1.output if item.type == "function_call"),
+                None,
+            )
+
+            if tool_call:
+                fn_args     = json.loads(tool_call.arguments) if tool_call.arguments else {}
+                tool_result = self._call_tool(tool_call.name, fn_args)
+
+                # Pass 2 — append ALL output items from resp1 (reasoning models
+                # emit a 'reasoning' item before the 'function_call' item; the API
+                # requires both to be present together when replaying the history)
+                messages.extend(resp1.output)
+                messages.append({
+                    "type": "function_call_output",
+                    "call_id": tool_call.call_id,
+                    "output": tool_result,
+                })
+                
+                # Inject wordalisation context for describing the metrics returned by the tool
+                keywords = self._get_keywords_for_tool(tool_call.name, input)
+                wordalisation_context = self.get_wordalisation_context_for_metrics(keywords)
+                if wordalisation_context:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"{wordalisation_context}\n\n"
+                            "Use these definitions when describing the player's qualities. "
+                            "Answer in 3-4 concise sentences combining the statistical data with these conceptual explanations."
+                        ),
+                    })
+                
+                st.expander(
+                    f"Chat transcript (tool: {tool_call.name})", expanded=False
+                ).write(messages)
+            else:
+                # No tool called — answer directly (shouldn't normally happen)
+                tool_result = None
+                st.expander("Chat transcript", expanded=False).write(messages)
+
+            if stream:
+                if GPT_SUPPORTS_REASONING:
+                    reasoning_effort = reasoning_effort if reasoning_effort in GPT_AVAILABLE_REASONING_EFFORTS else GPT_AVAILABLE_REASONING_EFFORTS[0]
+                    response_stream = client.responses.create(
+                        model=GPT_CHAT_MODEL, input=messages,
+                        reasoning={"effort": reasoning_effort}, stream=True,
+                    )
+                elif GPT_SUPPORTS_TEMPERATURE:
+                    response_stream = client.responses.create(
+                        model=GPT_CHAT_MODEL, input=messages,
+                        temperature=temperature, stream=True,
+                    )
+                else:
+                    response_stream = client.responses.create(
+                        model=GPT_CHAT_MODEL, input=messages, stream=True,
+                    )
+
+                def streamed_chunks():
+                    for event in response_stream:
+                        if event.type == "response.output_text.delta":
+                            yield event.delta
+
+                answer = streamed_chunks()
+            else:
+                if GPT_SUPPORTS_REASONING:
+                    reasoning_effort = reasoning_effort if reasoning_effort in GPT_AVAILABLE_REASONING_EFFORTS else GPT_AVAILABLE_REASONING_EFFORTS[0]
+                    resp2 = client.responses.create(
+                        model=GPT_CHAT_MODEL, input=messages,
+                        reasoning={"effort": reasoning_effort},
+                    )
+                elif GPT_SUPPORTS_TEMPERATURE:
+                    resp2 = client.responses.create(
+                        model=GPT_CHAT_MODEL, input=messages,
+                        temperature=temperature,
+                    )
+                else:
+                    resp2 = client.responses.create(
+                        model=GPT_CHAT_MODEL, input=messages,
+                    )
+                answer = resp2.output_text
+
+        self.messages_to_display.append({"role": "assistant", "content": answer})
+
+    def get_relevant_info(self, query):
+        """
+        Retrieve relevant wordalisation context for generic questions.
+        Returns exact pre-written answers from domain Q&A pairs when available.
+        """
+        if not query:
+            return ""
+        
+        # Check if query matches a pre-loaded Q&A pair (case-insensitive)
+        query_lower = query.lower().strip().rstrip('?').rstrip('.')
+        
+        for i in range(0, len(self._domain_qa), 2):
+            if i + 1 < len(self._domain_qa):
+                q = self._domain_qa[i].get("content", "").lower().strip().rstrip('?').rstrip('.')
+                a = self._domain_qa[i + 1].get("content", "")
+                
+                # Exact or close match
+                if query_lower == q or query_lower in q or q in query_lower:
+                    return f"Pre-written answer from wordalisation:\n{a}"
+        
+        return ""
+
+    def get_wordalisation_context_for_metrics(self, keywords):
+        """
+        Extract wordalisation Q&A pairs relevant to specific metrics/qualities.
+        Used to provide consistent explanations when describing player stats.
+        
+        Args:
+            keywords: list of terms to search for (e.g., ['ground duel', 'aerial', 'ball playing'])
+        
+        Returns:
+            String containing relevant Q&A pairs for context
+        """
+        if not self._domain_qa or not keywords:
+            return ""
+        
+        relevant_pairs = []
+        keywords_lower = [k.lower() for k in keywords]
+        
+        for i in range(0, len(self._domain_qa), 2):
+            if i + 1 < len(self._domain_qa):
+                q = self._domain_qa[i].get("content", "")
+                a = self._domain_qa[i + 1].get("content", "")
+                q_lower = q.lower()
+                
+                # Check if any keyword appears in the question
+                if any(kw in q_lower for kw in keywords_lower):
+                    relevant_pairs.append(f"Q: {q}\nA: {a}")
+        
+        if relevant_pairs:
+            return "Relevant wordalisation context for describing these metrics:\n\n" + "\n\n".join(relevant_pairs[:5])
+        return ""
+
+    def _get_keywords_for_tool(self, tool_name, user_query):
+        """
+        Determine which metric keywords are relevant for the given tool and query.
+        Returns list of terms to search for in wordalisation Q&A pairs.
+        """
+        # Base keywords for each tool
+        base_keywords = {
+            "get_player_summary": [
+                "ground duel quality", "aerial duel quality", "ball playing quality",
+                "ground duel", "aerial duel", "ball playing",
+                "duel success", "possession win", "discipline",
+                "aerial success", "pass safety", "xT", "carries"
+            ],
+            "get_pair_evaluation": [
+                "ground duel quality", "aerial duel quality", "ball playing quality",
+                "complement", "pairing", "similar", "weakness"
+            ],
+            "get_better_partner": [
+                "ground duel quality", "aerial duel quality", "ball playing quality",
+                "partner", "replacement", "complement"
+            ],
+        }
+        
+        keywords = base_keywords.get(tool_name, [])
+        
+        # Add query-specific keywords (detect which quality dimension is being asked about)
+        query_lower = user_query.lower()
+        if any(term in query_lower for term in ["aerial", "in the air", "heading"]):
+            keywords = ["aerial duel quality", "aerial duel", "aerial success"] + keywords
+        elif any(term in query_lower for term in ["ground", "tackling", "defending"]):
+            keywords = ["ground duel quality", "ground duel", "duel success"] + keywords
+        elif any(term in query_lower for term in ["ball", "passing", "distribution", "playing"]):
+            keywords = ["ball playing quality", "ball playing", "pass", "xT"] + keywords
+        
+        return keywords
+
+    def _call_tool(self, name: str, args: dict) -> str:
+        """Execute the named tool and return its synthesized player data."""
+        if name == "get_player_summary":
+            return DefenderDescription(self.player_a).synthesize_text()
+        elif name == "get_pair_evaluation":
+            if self.player_b is None:
+                return "No second player selected. Please select Player B in the sidebar to evaluate a pairing."
+            return CBPairingDescription(self.player_a, self.player_b).synthesize_text()
+        elif name == "get_better_partner":
+            return CBReplacementDescription(
+                self.player_a,
+                self.all_players_df,
+                quality_focus=args.get("quality_focus"),
+            ).synthesize_text()
+        return "Tool not found."
 
 
 class PlayerChat(Chat):

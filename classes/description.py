@@ -392,58 +392,88 @@ class DefenderDescription(Description):
 
         return intro
 
+    # ── Sub-metric definitions shared across all CB description classes ─────────
+    _GD_METRICS = {
+        "z_possession_win_rate":  "possession win rate",
+        "z_duel_success_rate":    "duel success rate",
+        "z_interceptions_per90":  "interceptions per 90",
+        "z_duels_per90":          "duels per 90",
+        "z_discipline":           "discipline",
+        "z_card_discipline":      "card discipline",
+    }
+    _AD_METRICS = {
+        "z_aerial_duel_success_rate": "aerial success rate",
+        "z_aerial_duels_per90":       "aerial duels per 90",
+        "z_aerial_won_duel_per90":    "aerial duels won per 90",
+    }
+    _BP_METRICS = {
+        "z_Accuracy_Adjusted_Risk_per_Pass": "pass safety",
+        "z_xT_per_Pass":                     "xT per pass",
+        "z_FT_Entry_Passes_per_90":          "final-third entry passes per 90",
+        "z_xT_via_Carries_per_90":           "xT via carries per 90",
+    }
+
     def synthesize_text(self):
         player = self.player
-        description = f"Here is a ground duel quality analysis of {player.name}. \n\n"
+        m = player.ser_metrics
+        name = player.name
 
-        # List the z-score metrics for ground duels
-        metrics = [
-            "z_possession_win_rate",
-            "z_duel_success_rate",
-            "z_interceptions_per90",
-            "z_duels_per90",
-            "z_discipline",
-            "z_card_discipline"
-        ]
+        description = f"Here is a full quality profile of {name}.\n\n"
 
-        metric_labels = {
-        "z_possession_win_rate": "possession win rate",
-        "z_duel_success_rate": "duel success rate",
-        "z_interceptions_per90": "interceptions per 90",
-        "z_duels_per90": "duels per 90",
-        "z_discipline": "discipline",
-        "z_card_discipline": "card discipline",
-}
+        # ── Ground Duel ──────────────────────────────────────────────────────
+        description += "GROUND DUEL QUALITY:\n"
+        for col, label in self._GD_METRICS.items():
+            if col in m:
+                description += f"{name} is {sentences.describe_level(m[col])} in {label} compared to other centre-backs. "
+        description += "\n\n"
 
-        for metric in metrics:
-            if metric in player.ser_metrics:
-                description += f"{player.name} was "
-                description += sentences.describe_level(player.ser_metrics[metric])
-                description += f" in {metric_labels[metric]} compared to other centre-backs in the same league. "
+        # ── Aerial Duel ──────────────────────────────────────────────────────
+        aerial_cols_present = [c for c in self._AD_METRICS if c in m]
+        if aerial_cols_present:
+            description += "AERIAL DUEL QUALITY:\n"
+            for col in aerial_cols_present:
+                description += f"{name} is {sentences.describe_level(m[col])} in {self._AD_METRICS[col]} compared to other centre-backs. "
+            description += "\n\n"
+
+        # ── Ball Playing ─────────────────────────────────────────────────────
+        bp_cols_present = [c for c in self._BP_METRICS if c in m]
+        if bp_cols_present:
+            description += "BALL PLAYING QUALITY:\n"
+            for col in bp_cols_present:
+                description += f"{name} is {sentences.describe_level(m[col])} in {self._BP_METRICS[col]} compared to other centre-backs. "
+            description += "\n\n"
+
+        # ── Composite quality levels ─────────────────────────────────────────
+        composite = []
+        if "duel_quality" in m:
+            composite.append(f"ground duel quality: {sentences.describe_level(m['duel_quality'])}")
+        if "aerial_duel_quality" in m:
+            composite.append(f"aerial duel quality: {sentences.describe_level(m['aerial_duel_quality'])}")
+        if "ball_playing_quality" in m:
+            composite.append(f"ball playing quality: {sentences.describe_level(m['ball_playing_quality'])}")
+        if composite:
+            description += "COMPOSITE QUALITY SCORES:\n"
+            description += f"{name}: " + ", ".join(composite) + ".\n\n"
 
         return description
 
     def get_prompt_messages(self):
+        name = self.player.name
         prompt = (
             "Please use the statistical description enclosed with ``` to do the following:\n\n"
-            f"First, write a 3-sentence summary of {self.player.name}’s ground duel quality. "
+            f"First, write a 3-sentence summary of {name}'s overall defensive profile covering all three quality dimensions "
+            "(ground duels, aerial duels, and ball playing). "
             "Then answer each of the following questions. Use only the data provided.\n\n"
-            f"Q1 [VALIDATION — metric labels]: For each of the 6 ground duel metrics, state the exact qualitative level used to describe {self.player.name} "
-            "(choose strictly from: outstanding, excellent, good, average, below average, poor). "
-            "Format as a bullet list: ‘- <metric name>: <level>’.\n\n"
-            f"Q2: What is {self.player.name}’s overall defensive profile? (1-2 sentences)\n\n"
-            f"Q3: What are {self.player.name}’s main strengths in ground duels? (1-2 sentences)\n\n"
-            f"Q4: What are {self.player.name}’s weaknesses or areas for improvement? (1-2 sentences)\n\n"
-            f"Q5: How active and aggressive is {self.player.name} in defensive duels? (1-2 sentences)\n\n"
-            f"Q6: How disciplined is {self.player.name} in terms of fouls and card management? (1-2 sentences)\n\n"
-            f"Q7: How does {self.player.name} compare to other centre-backs in the league? (1-2 sentences)\n\n"
-            f"Q8: What is a centre back?\n\n"
-            f"Q9: What is ground duel quality?\n\n"
-            f"Q10: What metrics do we use to evaluate a centre back’s ground duel quality?\n\n"
+            f"Q1: What is {name}'s overall profile across all three quality dimensions? (1-2 sentences)\n\n"
+            f"Q2: What are {name}'s main strengths? Call out specific sub-metrics by name. (1-2 sentences)\n\n"
+            f"Q3: What are {name}'s weaknesses? Call out specific sub-metrics by name. (1-2 sentences)\n\n"
+            f"Q4: How does {name} contribute in ground duels — activity and success rate? (1-2 sentences)\n\n"
+            f"Q5: How does {name} perform aerially? (1-2 sentences)\n\n"
+            f"Q6: How does {name} contribute in ball playing and build-up? (1-2 sentences)\n\n"
+            f"Q7: How does {name} compare to other centre-backs in the league overall? (1-2 sentences)\n\n"
             "Format your response as:\n"
             "Summary: [3-sentence summary]\n\n"
-            "Q: [question]\nA: [answer]\n\n"
-            "(Q1 answer should be a bullet list of metric: level pairs)\n"
+            "Q: [question]\nA: [answer]\n"
         )
         return [{"role": "user", "content": prompt}]
 
@@ -491,93 +521,238 @@ class CBPairingDescription(Description):
             ]
         return intro
 
+    # ── Shared sub-metric definitions (same as DefenderDescription) ─────────
+    _GD_METRICS = {
+        "z_possession_win_rate":  "possession win rate",
+        "z_duel_success_rate":    "duel success rate",
+        "z_interceptions_per90":  "interceptions per 90",
+        "z_duels_per90":          "duels per 90",
+        "z_discipline":           "discipline",
+        "z_card_discipline":      "card discipline",
+    }
+    _AD_METRICS = {
+        "z_aerial_duel_success_rate": "aerial success rate",
+        "z_aerial_duels_per90":       "aerial duels per 90",
+        "z_aerial_won_duel_per90":    "aerial duels won per 90",
+    }
+    _BP_METRICS = {
+        "z_Accuracy_Adjusted_Risk_per_Pass": "pass safety",
+        "z_xT_per_Pass":                     "xT per pass",
+        "z_FT_Entry_Passes_per_90":          "final-third entry passes per 90",
+        "z_xT_via_Carries_per_90":           "xT via carries per 90",
+    }
+
+    def _describe_player(self, player) -> str:
+        """One player's metrics across all three quality dimensions."""
+        m = player.ser_metrics
+        name = player.name
+        out = f"{name}:\n"
+
+        for col, label in self._GD_METRICS.items():
+            if col in m:
+                out += f"  {label}: {sentences.describe_level(m[col])}\n"
+        for col, label in self._AD_METRICS.items():
+            if col in m:
+                out += f"  {label}: {sentences.describe_level(m[col])}\n"
+        for col, label in self._BP_METRICS.items():
+            if col in m:
+                out += f"  {label}: {sentences.describe_level(m[col])}\n"
+
+        # Composite scores
+        for composite_col, composite_label in [
+            ("duel_quality",        "ground duel quality"),
+            ("aerial_duel_quality", "aerial duel quality"),
+            ("ball_playing_quality","ball playing quality"),
+        ]:
+            if composite_col in m:
+                out += f"  {composite_label}: {sentences.describe_level(m[composite_col])}\n"
+        return out + "\n"
+
     def synthesize_text(self) -> str:
-        metrics = [
-            "z_possession_win_rate",
-            "z_duel_success_rate",
-            "z_interceptions_per90",
-            "z_duels_per90",
-            "z_discipline",
-            "z_card_discipline",
-        ]
-        metric_labels = {
-            "z_possession_win_rate": "possession win rate",
-            "z_duel_success_rate": "duel success rate",
-            "z_interceptions_per90": "interceptions per 90",
-            "z_duels_per90": "duels per 90",
-            "z_discipline": "discipline",
-            "z_card_discipline": "card discipline",
-        }
+        a_name = self.player_a.name
+        b_name = self.player_b.name
 
         description = (
-            f"Here is a ground duel quality description of centre backs {self.player_a.name} and "
-            f"{self.player_b.name} as a defensive pairing.\n\n"
+            f"Here is a full quality profile of centre backs {a_name} and "
+            f"{b_name} as a defensive pairing.\n\n"
         )
-
-        for player in [self.player_a, self.player_b]:
-            description += f"{player.name}:\n"
-            for metric in metrics:
-                if metric in player.ser_metrics:
-                    level = sentences.describe_level(player.ser_metrics[metric])
-                    description += f"He is {level} in {metric_labels[metric]} compared to other centre backs.\n"
-            description += "\n"
-
-        # If the full dataset is available, append the top-15 replacement candidates.
-        # Candidates are ranked by player_a's weakest metrics — the replacement for B
-        # must cover A's gaps so the new pair becomes balanced.
-        if self.df is not None:
-            current_names = {self.player_a.name, self.player_b.name}
-            others = self.df[~self.df["player.name"].isin(current_names)].copy()
-            z_cols = [m for m in metrics if m in others.columns]
-
-            # Find the 2 weakest metrics for player_a
-            a_scores = {m: self.player_a.ser_metrics[m] for m in z_cols if m in self.player_a.ser_metrics}
-            weak_metrics = sorted(a_scores, key=a_scores.get)[:2]
-            if not weak_metrics:
-                weak_metrics = z_cols[:2]
-
-            # Rank candidates by their strength in player_a's weak areas
-            others["_gap_score"] = others[weak_metrics].mean(axis=1)
-            top = others.nlargest(6, "_gap_score")
-
-            description += (
-                f"Other available centre-backs in the league "
-                f"(ranked by strength in {self.player_a.name}'s weakest areas: "
-                f"{', '.join(metric_labels[m] for m in weak_metrics)}):\n"
-            )
-            for _, row in top.iterrows():
-                name = row["player.name"]
-                levels = ", ".join(
-                    f"{metric_labels[m]}: {sentences.describe_level(row[m])}"
-                    for m in metrics if m in row.index and pd.notna(row[m])
-                )
-                description += f"- {name}: {levels}\n"
-            description += "\n"
+        description += self._describe_player(self.player_a)
+        description += self._describe_player(self.player_b)
 
         return description
 
     def get_prompt_messages(self) -> List[Dict[str, str]]:
         a, b = self.player_a.name, self.player_b.name
-        replacement_suffix = (
-            f"From the list of available centre-backs provided, name the single best specific replacement and explain in 1-2 sentences why they address the gap.\n\n"
-            if self.df is not None else
-            "Describe only the ideal profile (no player data available for specific names).\n\n"
-        )
         prompt = (
             "Please use only the statistical description enclosed with ``` to analyse this centre-back pairing.\n\n"
             f"First, write a 3-sentence summary of the partnership between {a} and {b}.\n\n"
-            "Sentence 1 must describe the overall defensive profile of the pair as a unit (do not describe players individually).\n"
-            "Sentence 2 should explain how their qualities complement or overlap, referring to both players together.\n"
-            "Sentence 3 should state the main weakness or risk of the pairing based on their shared or contrasting metrics.\n\n"
-            "Do not write separate descriptions of each player. Focus on the pairing as a single defensive unit.\n\n"
-            "Ensure that each sentence is directly supported by the metrics provided (duel success rate, duels per 90, interceptions per 90, possession win rate, discipline, and card discipline).\n\n"
+            "Sentence 1: overall defensive profile of the pair as a unit across all three quality dimensions.\n"
+            "Sentence 2: how their qualities complement or overlap — name specific sub-metrics.\n"
+            "Sentence 3: the main shared weakness or risk of the pairing — name specific sub-metrics.\n\n"
             "Then answer each of the following questions. Use only the data provided.\n\n"
-            f"Q1 [VALIDATION — metric comparison]: For each metric, state which player scores higher and list both levels. "
-            f"Format as a bullet list: '- <metric>: {a} (<level>) vs {b} (<level>)'.\n\n"
-            f"[REPLACEMENT]: We are replacing {b}. Based on {a}'s weaknesses, describe the ideal replacement profile "
-            f"— which metrics must the new player be strong in to cover {a}'s gaps and create a balanced pair? "
-            + replacement_suffix +
-            "Format your response as:\nSummary: [3-4 sentence summary]\n\nQ: [question]\nA: [answer]\n"
+            f"Q1: How do {a} and {b} compare in ground duel quality? Which sub-metrics differ most? (2-3 sentences)\n\n"
+            f"Q2: How do {a} and {b} compare aerially? Are they complementary or similar? (1-2 sentences)\n\n"
+            f"Q3: How do {a} and {b} compare in ball playing? What is the combined risk? (1-2 sentences)\n\n"
+            f"Q4: What is the combined strength of this pairing? (1-2 sentences)\n\n"
+            f"Q5: What is the main weakness of this pairing? Name specific sub-metrics. (1-2 sentences)\n\n"
+            f"Q6: Are these two players too similar, or do they complement each other well? (1-2 sentences)\n\n"
+            "Format your response as:\n"
+            "Summary: [3-sentence summary]\n\nQ: [question]\nA: [answer]\n"
+        )
+        return [{"role": "user", "content": prompt}]
+
+
+class CBReplacementDescription(Description):
+    """
+    Identify the weakest quality dimension for player_a and rank the best
+    complementary partners from the full CB pool.
+    """
+    output_token_limit = 300
+
+    @property
+    def gpt_examples_path(self):
+        return f"{self.gpt_examples_base}/Defenders_pair_example.xlsx"
+
+    @property
+    def describe_paths(self):
+        return [f"{self.describe_base}/Defender_Pair.xlsx"]
+
+    # ── Sub-metric definitions ───────────────────────────────────────────────
+    _QUALITY_COLS = {
+        "ground_duel":  ("duel_quality",         "ground duel quality"),
+        "aerial_duel":  ("aerial_duel_quality",  "aerial duel quality"),
+        "ball_playing": ("ball_playing_quality", "ball playing quality"),
+    }
+    _SUBMETRICS = {
+        "ground_duel": {
+            "z_possession_win_rate":  "possession win rate",
+            "z_duel_success_rate":    "duel success rate",
+            "z_interceptions_per90":  "interceptions per 90",
+            "z_duels_per90":          "duels per 90",
+            "z_discipline":           "discipline",
+        },
+        "aerial_duel": {
+            "z_aerial_duel_success_rate": "aerial success rate",
+            "z_aerial_duels_per90":       "aerial duels per 90",
+            "z_aerial_won_duel_per90":    "aerial duels won per 90",
+        },
+        "ball_playing": {
+            "z_Accuracy_Adjusted_Risk_per_Pass": "pass safety",
+            "z_xT_per_Pass":                     "xT per pass",
+            "z_FT_Entry_Passes_per_90":          "final-third entry passes per 90",
+            "z_xT_via_Carries_per_90":           "xT via carries per 90",
+        },
+    }
+
+    def __init__(self, player_a, all_players_df, quality_focus=None):
+        """
+        Parameters
+        ----------
+        player_a        : Player  — the CB being evaluated
+        all_players_df  : pd.DataFrame — merged DataFrame with all quality +
+                          z-score columns; must include player.id and player.name
+        quality_focus   : str | None — "ground_duel" | "aerial_duel" |
+                          "ball_playing"; auto-detected if None
+        """
+        self.player_a       = player_a
+        self.all_players_df = all_players_df
+        self.quality_focus  = quality_focus
+        super().__init__()
+
+    def _detect_weakest_quality(self):
+        """Return the quality key whose composite z-score is lowest for player_a."""
+        m = self.player_a.ser_metrics
+        scores = {
+            key: m[col]
+            for key, (col, _) in self._QUALITY_COLS.items()
+            if col in m
+        }
+        if not scores:
+            return "ground_duel"
+        return min(scores, key=scores.get)
+
+    def synthesize_text(self) -> str:
+        focus     = self.quality_focus or self._detect_weakest_quality()
+        col, label = self._QUALITY_COLS.get(focus, ("duel_quality", "ground duel quality"))
+        sub_map   = self._SUBMETRICS.get(focus, {})
+        name_a    = self.player_a.name
+        m_a       = self.player_a.ser_metrics
+
+        # ── Describe player_a's weakness ────────────────────────────────────
+        description = f"REPLACEMENT ANALYSIS for {name_a}.\n\n"
+
+        if col in m_a:
+            description += (
+                f"{name_a}'s weakest quality dimension is {label} "
+                f"({sentences.describe_level(m_a[col])}).\n"
+            )
+        description += f"Weakest sub-metrics in {label}:\n"
+        for z_col, sub_label in sub_map.items():
+            if z_col in m_a:
+                description += f"  {sub_label}: {sentences.describe_level(m_a[z_col])}\n"
+        description += "\n"
+
+        # ── Rank top-5 complementary candidates ─────────────────────────────
+        df = self.all_players_df
+        if col not in df.columns or "player.name" not in df.columns:
+            description += "No candidate data available.\n"
+            return description
+
+        others = df[df["player.name"] != name_a].copy()
+        if col not in others.columns:
+            return description
+
+        top = others.nlargest(5, col)
+
+        description += f"Top complementary partners ranked by {label}:\n"
+        for _, row in top.iterrows():
+            cand_name = row["player.name"]
+            cand_composite = sentences.describe_level(row[col]) if pd.notna(row.get(col)) else "n/a"
+            sub_parts = []
+            for z_col, sub_label in sub_map.items():
+                if z_col in row.index and pd.notna(row[z_col]):
+                    sub_parts.append(f"{sub_label}: {sentences.describe_level(row[z_col])}")
+            subs = ", ".join(sub_parts) if sub_parts else "no sub-metric data"
+            description += f"  - {cand_name}: {label} overall {cand_composite}. {subs}\n"
+
+        return description
+
+    def get_intro_messages(self) -> List[Dict[str, str]]:
+        intro = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a football recruitment analyst specialising in centre-back pairings. "
+                    "Given a CB's weakest quality dimension and a ranked list of complementary "
+                    "candidates, you recommend the best replacement partner and explain why they "
+                    "address the gap. Base every conclusion on the data provided."
+                ),
+            },
+        ]
+        if len(self.describe_paths) > 0:
+            intro += [
+                {"role": "user", "content": "First, could you answer some questions about CB pairings?"},
+                {"role": "assistant", "content": "Sure!"},
+            ]
+        return intro
+
+    def get_prompt_messages(self) -> List[Dict[str, str]]:
+        focus = self.quality_focus or self._detect_weakest_quality()
+        _, label = self._QUALITY_COLS.get(focus, ("duel_quality", "ground duel quality"))
+        name = self.player_a.name
+        prompt = (
+            f"Please use the statistical description enclosed with ``` to recommend the best "
+            f"CB partner for {name}.\n\n"
+            f"Q1: What is {name}'s weakest quality dimension, and which specific sub-metrics are lowest? "
+            f"(2-3 sentences)\n\n"
+            f"Q2: Which player from the candidate list would best complement {name} in {label}, "
+            f"and why? Name the specific sub-metrics that make them a good fit. (2-3 sentences)\n\n"
+            f"Q3: Which is the second-best option, and how does it compare to the top pick? (1-2 sentences)\n\n"
+            f"Q4: What kind of pairing would {name} + the recommended partner form overall? "
+            f"Any remaining shared weaknesses to be aware of? (1-2 sentences)\n\n"
+            "Format your response as:\n"
+            "Recommendation: [top pick + 1-2 sentence justification]\n\n"
+            "Q: [question]\nA: [answer]\n"
         )
         return [{"role": "user", "content": prompt}]
 
